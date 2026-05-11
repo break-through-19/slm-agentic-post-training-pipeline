@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "slm-post-training"
+version = "0.1.0"
+description = "Agentic function-calling enhancement in small language models via two-stage post-training"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.3",
+    "transformers>=4.45",
+    "peft>=0.12",
+    "trl>=0.9",
+    "datasets>=2.20",
+    "accelerate>=0.30",
+    "omegaconf>=2.3",
+    "rich>=13.0",
+    "wandb",
+]
+
+[project.optional-dependencies]
+# Required for Stage 2 preference pair generation (GPU only)
+generation = ["vllm>=0.5"]
+# 4-bit quantisation support (Linux/CUDA only)
+quant = ["bitsandbytes>=0.43"]
+dev = ["pytest>=8.0", "pytest-cov"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pipeline*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

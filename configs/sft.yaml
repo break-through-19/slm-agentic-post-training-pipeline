@@ -1,0 +1,20 @@
+# Stage 1 — Supervised Fine-Tuning.
+# Merged on top of base.yaml at runtime; only overrides are listed here.
+
+training:
+  dataset: "xlam_sft"
+  max_samples: 15000        # subsample from the full 60K xLAM set
+  train_split: 0.95
+  num_epochs: 3
+  per_device_batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4
+  warmup_ratio: 0.05
+  lr_scheduler: "cosine"
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  save_steps: 200
+  eval_steps: 200
+
+output:
+  dir: "outputs/sft"

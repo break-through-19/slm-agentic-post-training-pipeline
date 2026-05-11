@@ -1,0 +1,40 @@
+model:
+  name_or_path: "Qwen/Qwen2.5-1.5B-Instruct"
+  torch_dtype: "bfloat16"   # bfloat16 | float16 | float32
+  device: "auto"            # auto | cuda | mps | cpu
+  load_in_4bit: false       # requires bitsandbytes; CUDA only
+
+lora:
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+  bias: "none"
+
+data:
+  seed: 42
+  max_seq_len: 2048
+
+output:
+  dir: "outputs"
+  log_steps: 10
+
+evaluation:
+  bfcl_categories:
+    - simple
+    - multiple
+    - parallel
+    - irrelevance
+  max_eval_samples: null    # null = full set; integer caps per-category for dev runs
+  max_new_tokens: 256
+
+wandb:
+  enabled: false
+  project: "slm-post-training"
