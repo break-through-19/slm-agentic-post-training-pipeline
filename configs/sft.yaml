@@ -1,14 +1,20 @@
 # Stage 1 — Supervised Fine-Tuning.
 # Merged on top of base.yaml at runtime; only overrides are listed here.
 
+# Defaults are tuned to fit a single 24 GB GPU (e.g. RTX 4090 / L4 / A10).
+# Effective batch size = per_device_batch_size * gradient_accumulation_steps = 16.
+# If you OOM, lower --batch-size (then optionally raise grad-accum to keep the
+# effective batch constant). If you have more VRAM (40/80 GB), raise
+# per_device_batch_size and/or turn gradient_checkpointing off for speed.
 training:
   dataset: "xlam_sft"
   max_samples: 15000        # subsample from the full 60K xLAM set
   train_split: 0.95
   num_epochs: 3
   max_steps: -1             # -1 = use num_epochs; positive = hard cap on steps
-  per_device_batch_size: 4
-  gradient_accumulation_steps: 4
+  per_device_batch_size: 2  # 24 GB-safe; was 4 (OOM with seq_len 2048 + 152K vocab)
+  gradient_accumulation_steps: 8  # keeps effective batch at 16
+  gradient_checkpointing: true    # ~50-70% less activation memory; key for 24 GB
   learning_rate: 2.0e-4
   warmup_ratio: 0.05        # consumed by older trainers; current trainer uses warmup_steps
   lr_scheduler: "cosine"
@@ -16,6 +22,9 @@ training:
   max_grad_norm: 1.0
   save_steps: 200
   eval_steps: 200
+
+data:
+  max_seq_len: 1024         # most xLAM examples fit; halves activation + logit memory
 
 output:
   dir: "outputs/sft"

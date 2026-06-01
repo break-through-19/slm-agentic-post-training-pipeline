@@ -150,6 +150,14 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_batch_size_arg(parser: argparse.ArgumentParser) -> None:
+    """Per-device batch-size override — the primary lever for fixing CUDA OOM."""
+    parser.add_argument(
+        "--batch-size", type=int, default=None, metavar="N",
+        help="Override per-device batch size (lower this first if you hit CUDA OOM).",
+    )
+
+
 def _add_stage2_training_args(parser: argparse.ArgumentParser) -> None:
     """Arguments shared by the dpo and grpo sub-commands."""
     parser.add_argument(
@@ -168,6 +176,7 @@ def _add_stage2_training_args(parser: argparse.ArgumentParser) -> None:
         "--run-eval", action="store_true",
         help="Force BFCL evaluation even in smoke mode (off by default in smoke).",
     )
+    _add_batch_size_arg(parser)
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +402,8 @@ def run_sft(args: argparse.Namespace) -> None:
 
     if hasattr(args, "max_samples") and args.max_samples is not None:
         cfg.training.max_samples = args.max_samples
+    if args.batch_size is not None:
+        cfg.training.per_device_batch_size = args.batch_size
 
     device = resolve_device(cfg.model.device)
     logger.info("Stage 1 — SFT on device: %s", device)
@@ -519,6 +530,8 @@ def run_dpo(args: argparse.Namespace) -> None:
 
     _apply_common_overrides(cfg, args)
 
+    if args.batch_size is not None:
+        cfg.training.per_device_batch_size = args.batch_size
     if args.pairs_path:
         cfg.training.pairs_path = args.pairs_path
 
@@ -576,6 +589,16 @@ def run_grpo(args: argparse.Namespace) -> None:
         logger.info("Smoke mode: GRPO with group size 2, max 2 steps")
 
     _apply_common_overrides(cfg, args)
+
+    if args.batch_size is not None:
+        # GRPO requires per_device_batch_size to be a multiple of num_generations
+        num_generations = cfg.training.get("num_generations", 8)
+        if args.batch_size % num_generations != 0:
+            raise ValueError(
+                f"--batch-size {args.batch_size} must be a multiple of "
+                f"num_generations ({num_generations}) for GRPO."
+            )
+        cfg.training.per_device_batch_size = args.batch_size
 
     sft_checkpoint = args.sft_checkpoint or cfg.training.get("sft_checkpoint")
     device = resolve_device(cfg.model.device)
@@ -652,6 +675,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
             "skips eval because 5 steps does not produce a meaningfully trained model."
         ),
     )
+    _add_batch_size_arg(sft_parser)
 
     # --- generate-pairs (Stage 2A data prep) ---
     pairs_parser = subparsers.add_parser(

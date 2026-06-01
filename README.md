@@ -257,6 +257,9 @@ python scripts/run_pipeline.py sft --device mps
 # Override training sample count
 python scripts/run_pipeline.py sft --max-samples 5000
 
+# Lower the batch size if you hit CUDA out-of-memory
+python scripts/run_pipeline.py sft --batch-size 1
+
 # Skip BFCL eval after training
 python scripts/run_pipeline.py sft --skip-eval
 
@@ -412,6 +415,7 @@ CLI flags (sub-command specific):
 | `--max-eval-samples N` | baseline, sft, dpo, grpo | Cap eval samples per BFCL category |
 | `--categories ...` | baseline, sft, dpo, grpo | Restrict eval to a subset of BFCL categories |
 | `--max-samples N` | sft | Override training sample count |
+| `--batch-size N` | sft, dpo, grpo | Per-device batch size (lower first on CUDA OOM) |
 | `--skip-eval` / `--run-eval` | sft, dpo, grpo | Skip / force BFCL eval after training |
 | `--sft-checkpoint PATH` | generate-pairs, dpo, grpo | SFT adapter to start from |
 | `--from-base` | generate-pairs, dpo, grpo | Start from base model when no SFT checkpoint exists |
@@ -425,6 +429,26 @@ Environment variables (set in `.env` or shell):
 |----------|-------------|-------------|
 | `HF_TOKEN` | Stage 1 SFT | Read token for gated xLAM-60K dataset |
 | `WANDB_API_KEY` | Optional | Enables W&B logging when `wandb.enabled=true` |
+
+---
+
+## Troubleshooting: CUDA out of memory
+
+The defaults target a single **24 GB** GPU. If you see `torch.OutOfMemoryError: CUDA out of memory`, apply these in order (each trades speed or effective batch size for memory):
+
+1. **Lower the per-device batch size** — the fastest lever:
+   ```bash
+   python scripts/run_pipeline.py sft --batch-size 1
+   ```
+2. **Reduce sequence length** in `configs/sft.yaml` (`data.max_seq_len: 768` or `512`). Shorter sequences cut both activation and logit memory; a few long examples get dropped.
+3. **Ensure gradient checkpointing is on** (it is by default in `sft.yaml`). Do not disable it on ≤24 GB cards.
+4. **Reduce the fragmentation overhead** the error message itself suggests:
+   ```bash
+   export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+   ```
+5. **Check the GPU isn't already occupied** by a stale process: `nvidia-smi`. On a shared node another job may be holding most of the card.
+
+Defaults that keep Stage 1 inside 24 GB: `per_device_batch_size=2`, `gradient_accumulation_steps=8` (effective batch 16), `gradient_checkpointing=true`, `max_seq_len=1024`. To go faster on a 40/80 GB card, raise `per_device_batch_size` and optionally set `gradient_checkpointing: false`.
 
 ---
 
