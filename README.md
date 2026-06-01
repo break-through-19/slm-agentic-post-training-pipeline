@@ -104,47 +104,62 @@ slm-agentic-post-training-pipeline/
 
 ## Setup
 
-**Requirements:** Python 3.10+, PyTorch 2.5
+**Requirements:**
+
+- **Python ≥ 3.10 (hard requirement).** The training stack (`trl≥1.0`, `transformers≥4.49`, `tokenizers≥0.22`) ships wheels only for cp310+. On Python 3.9 pip silently backtracks to ancient, incompatible versions (trl 0.12, transformers 4.46) — this is slow *and* installs a TRL whose API the trainers don't target. Check with `python --version`.
+- **PyTorch ≥ 2.5, installed first** (see below). `torch` is deliberately not a declared dependency, so you control which CUDA build is used.
 
 ```bash
 git clone https://github.com/break-through-19/slm-agentic-post-training-pipeline.git
 cd slm-agentic-post-training-pipeline
+
+# 1. Install torch FIRST, matched to your platform:
+pip install torch                                   # CPU / macOS (MPS)
+# or, on a CUDA box, pick the build matching your driver, e.g. cu121:
+# pip install --index-url https://download.pytorch.org/whl/cu121 torch
+
+# 2. Install the package:
 pip install -e ".[dev]"
 
-# With 4-bit quantisation (CUDA + Linux only)
-pip install -e ".[dev,quant]"
-
-# With experiment tracking
-pip install -e ".[dev,wandb]"
+# Optional extras:
+pip install -e ".[dev,quant]"     # 4-bit quantisation (CUDA Linux only)
+pip install -e ".[dev,wandb]"     # experiment tracking
+pip install -e ".[generation]"    # vLLM for fast GRPO rollouts (GPU only)
 ```
 
-### Linux GPU clusters: avoid `/tmp` disk pressure
+### Linux GPU clusters
 
-On shared clusters the system `/tmp` is often only 10–20 GB. The torch wheel
-alone is ~800 MB and bundles the entire CUDA stack as nvidia-* wheels (another
-several GB). The default install can fail with `No space left on device` while
-pip resolves dependencies.
+Two things make cluster installs fast and reliable:
+
+**1. Use a Python 3.10+ interpreter for the venv.** On Python 3.9 the install will backtrack for a very long time and pull mutually-incompatible old packages.
 
 ```bash
-# Point pip's build & cache at a partition with space (your project dir works)
+module load python/3.11    # or: conda create -n slm python=3.11
+python3.11 -m venv .venv
+source .venv/bin/activate
+python --version           # must print 3.10+
+```
+
+**2. Install torch first, and redirect pip's cache/temp to a partition with space.** Shared `/tmp` is often only 10–20 GB; the torch + CUDA wheels need more.
+
+```bash
+# Redirect pip scratch space to your project/data partition
 mkdir -p $HOME/.cache/pip $HOME/tmp_pip
 export TMPDIR=$HOME/tmp_pip
 export PIP_CACHE_DIR=$HOME/.cache/pip
 
-# Install torch separately from PyTorch's CUDA index — slimmer wheels and
-# avoids pip backtracking across many torch versions
-pip install --index-url https://download.pytorch.org/whl/cu121 \
-    torch==2.5.1
+# torch first, from PyTorch's CUDA index (the +cuXXX build, not PyPI's)
+pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.5.1
 
-# Then install the rest. Torch is already satisfied so pip won't redownload it.
+# then the package — pip leaves the installed torch untouched and never
+# re-resolves the multi-GB nvidia-* CUDA wheels
 pip install -e ".[dev,quant]"
 
-# Clean up after install
-pip cache purge
-rm -rf $HOME/tmp_pip
+pip cache purge        # reclaim space afterwards
 ```
 
-If `pip install` is still slow, add `--no-cache-dir` to skip on-disk caching.
+If the editable install is *still* slow, add `--no-cache-dir`. To verify the
+right stack landed: `python -c "import trl, transformers; print(trl.__version__, transformers.__version__)"` should report `trl ≥ 1.0` and `transformers ≥ 4.49`.
 
 ---
 

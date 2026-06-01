@@ -6,42 +6,53 @@ build-backend = "setuptools.build_meta"
 name = "slm-post-training"
 version = "0.1.0"
 description = "Agentic function-calling enhancement in small language models via two-stage post-training"
+# Python 3.10+ is REQUIRED. The whole HF training stack (trl>=1.0,
+# transformers>=4.49, tokenizers>=0.22) ships wheels only for cp310+. On
+# Python 3.9 pip silently backtracks to ancient, mutually-incompatible
+# versions (trl 0.12, transformers 4.46) — which both takes forever AND
+# installs a TRL whose API our trainers do not target. Create the venv with
+# python3.10 or newer.
 requires-python = ">=3.10"
 
-# Version ranges are pinned tight on purpose. Wider ranges (e.g. `torch>=2.3`)
-# trigger pip dependency-resolution backtracking that downloads 5+ versions of
-# torch (~800 MB each, bundling the entire CUDA stack) plus every minor of
-# trl/transformers/tokenizers — easily 15-25 GB of wheels before any install
-# completes. On constrained machines (small /tmp, shared clusters) this
-# manifests as "No space left on device". Keep these ranges narrow.
+# Dependency notes
+# ----------------
+# 1. torch is intentionally NOT declared here. On GPU machines/clusters torch
+#    is installed first, matched to the local CUDA build (e.g. the cu121
+#    wheel). Declaring it makes pip re-resolve and re-download the multi-GB
+#    CUDA wheel stack (nvidia-cublas, nvidia-cudnn, …), which is the main
+#    cause of the slow / stuck installs. Install torch separately first — see
+#    the README "Setup" section.
+# 2. tokenizers is NOT pinned: transformers already pins the exact tokenizers
+#    it needs. An independent tokenizers pin only creates conflicts that force
+#    transformers to backtrack across many 10 MB wheels.
+# 3. Floors match the tested versions; the trl<2 cap transitively bounds
+#    transformers/tokenizers to a known-good line without extra search.
 dependencies = [
-    "torch>=2.5,<2.6",
-    "transformers>=4.46,<4.50",
-    "tokenizers>=0.20,<0.21",
-    "peft>=0.13,<0.15",
-    "trl>=0.12,<0.13",
-    "datasets>=3.0,<4.0",
-    "accelerate>=1.0,<2.0",
-    "huggingface_hub>=0.26,<0.30",
+    "transformers>=4.49",
+    "trl>=1.0,<2.0",
+    "peft>=0.13",
+    "datasets>=3.0",
+    "accelerate>=1.0",
+    "huggingface_hub>=0.26",
     "omegaconf>=2.3,<3.0",
-    "rich>=13.0,<14.0",
+    "rich>=13.0",
 ]
 
 [project.optional-dependencies]
-# Stage 2 preference pair generation (GPU only).
-generation = ["vllm>=0.5,<0.7"]
+# Stage 2B faster online rollouts (GPU only). Optional: GRPO falls back to
+# plain HF generate when use_vllm=false.
+generation = ["vllm>=0.5"]
 
 # 4-bit quantisation support (CUDA Linux only).
-quant = ["bitsandbytes>=0.43,<0.45"]
+quant = ["bitsandbytes>=0.44"]
 
-# Experiment tracking — optional because it pulls 25+ MB of unused deps when
-# wandb.enabled=false in config (the default).
-wandb = ["wandb>=0.18,<0.20"]
+# Experiment tracking — optional; only needed when wandb.enabled=true.
+wandb = ["wandb>=0.18"]
 
 # Dev tooling — testing only, never required at runtime.
 dev = [
-    "pytest>=8.0,<10.0",
-    "pytest-cov>=5.0,<8.0",
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
 ]
 
 [tool.setuptools.packages.find]
