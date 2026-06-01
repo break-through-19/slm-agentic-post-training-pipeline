@@ -6,10 +6,11 @@ training:
   max_samples: 15000        # subsample from the full 60K xLAM set
   train_split: 0.95
   num_epochs: 3
+  max_steps: -1             # -1 = use num_epochs; positive = hard cap on steps
   per_device_batch_size: 4
   gradient_accumulation_steps: 4
   learning_rate: 2.0e-4
-  warmup_ratio: 0.05
+  warmup_ratio: 0.05        # consumed by older trainers; current trainer uses warmup_steps
   lr_scheduler: "cosine"
   weight_decay: 0.01
   max_grad_norm: 1.0

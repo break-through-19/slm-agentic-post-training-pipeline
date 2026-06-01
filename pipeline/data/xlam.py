@@ -4,14 +4,22 @@ xLAM-60K dataset loader for Stage 1 SFT.
 Source: Salesforce/xlam-function-calling-60k on Hugging Face.
 Each example contains: query (str), tools (JSON str or list), answers (JSON str or list).
 
+NOTE: This is a gated dataset. Before using it you must:
+  1. Accept the terms at https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k
+  2. Authenticate via one of:
+       export HF_TOKEN="hf_..."          # environment variable (recommended)
+       huggingface-cli login             # interactive login (persists to ~/.cache)
+
 Registers the "xlam_sft" dataset in the global registry on module import.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 
 from datasets import Dataset, load_dataset
+from datasets.exceptions import DatasetNotFoundError
 from omegaconf import DictConfig
 from transformers import PreTrainedTokenizer
 
@@ -21,6 +29,15 @@ from pipeline.formatting.chat_template import format_sft_example
 logger = logging.getLogger(__name__)
 
 XLAM_HF_REPO = "Salesforce/xlam-function-calling-60k"
+XLAM_TERMS_URL = "https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k"
+
+
+def _resolve_hf_token() -> str | None:
+    """Return the HuggingFace token from the environment, or None if not set."""
+    token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if token:
+        logger.info("HF_TOKEN found in environment — using for authenticated requests")
+    return token
 
 
 def _parse_json_field(value: str | list | dict) -> list:
@@ -46,9 +63,24 @@ def _is_valid_example(example: dict) -> bool:
 def _load_xlam(cfg: DictConfig) -> Dataset:
     max_samples = cfg.training.get("max_samples", None)
     seed = cfg.data.get("seed", 42)
+    token = _resolve_hf_token()
 
     logger.info("Downloading xLAM dataset from %s", XLAM_HF_REPO)
-    dataset = load_dataset(XLAM_HF_REPO, split="train")
+    try:
+        dataset = load_dataset(XLAM_HF_REPO, split="train", token=token)
+    except DatasetNotFoundError as exc:
+        raise RuntimeError(
+            f"\n\n{'='*65}\n"
+            f"  xLAM dataset requires authentication.\n\n"
+            f"  Steps to fix:\n"
+            f"    1. Accept the dataset terms at:\n"
+            f"       {XLAM_TERMS_URL}\n\n"
+            f"    2. Then authenticate using either:\n"
+            f"       export HF_TOKEN='hf_your_token_here'\n"
+            f"       — or —\n"
+            f"       huggingface-cli login\n"
+            f"{'='*65}\n"
+        ) from exc
 
     original_size = len(dataset)
     dataset = dataset.filter(_is_valid_example, desc="Filtering invalid examples")

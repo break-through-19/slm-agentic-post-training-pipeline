@@ -45,20 +45,37 @@ class SFTTrainer(BaseTrainer):
         use_bf16 = model_cfg.torch_dtype == "bfloat16"
         use_fp16 = model_cfg.torch_dtype == "float16"
 
+        # pin_memory is not supported on MPS and adds overhead — disable it
+        from pipeline.model.loader import resolve_device
+        effective_device = resolve_device(model_cfg.device)
+        use_pin_memory = effective_device not in ("mps", "cpu")
+
         report_to = (
             ["wandb"] if self.cfg.get("wandb", {}).get("enabled", False) else ["none"]
         )
 
+        # max_steps=-1 means "use num_epochs"; a positive value caps training
+        # regardless of epochs (used by smoke mode to guarantee a short run)
+        max_steps = int(train_cfg.get("max_steps", -1))
+
+        # Gradient checkpointing trades extra forward compute for ~50% less
+        # activation memory — essential for fitting a 1.5B model on MPS.
+        gradient_checkpointing = bool(train_cfg.get("gradient_checkpointing", False))
+
         sft_config = SFTConfig(
             output_dir=str(self.output_dir),
             num_train_epochs=train_cfg.num_epochs,
+            max_steps=max_steps,
             per_device_train_batch_size=train_cfg.per_device_batch_size,
             per_device_eval_batch_size=train_cfg.get(
                 "per_device_eval_batch_size", train_cfg.per_device_batch_size
             ),
             gradient_accumulation_steps=train_cfg.gradient_accumulation_steps,
+            gradient_checkpointing=gradient_checkpointing,
+            # use_reentrant=False is required by PEFT for correct grad flow
+            gradient_checkpointing_kwargs={"use_reentrant": False} if gradient_checkpointing else None,
             learning_rate=train_cfg.learning_rate,
-            warmup_ratio=train_cfg.warmup_ratio,
+            warmup_steps=0,                    # warmup_ratio deprecated in TRL 1.x
             lr_scheduler_type=train_cfg.lr_scheduler,
             weight_decay=train_cfg.weight_decay,
             max_grad_norm=train_cfg.max_grad_norm,
@@ -70,11 +87,18 @@ class SFTTrainer(BaseTrainer):
             load_best_model_at_end=self.eval_dataset is not None,
             bf16=use_bf16,
             fp16=use_fp16,
+            dataloader_pin_memory=use_pin_memory,
             report_to=report_to,
-            max_seq_length=self.cfg.data.max_seq_len,
+            max_length=self.cfg.data.max_seq_len,  # renamed in TRL >= 1.0
             # Dataset is already tokenised; skip TRL's internal prepare step
             dataset_kwargs={"skip_prepare_dataset": True},
         )
+
+        # When using gradient checkpointing with PEFT/LoRA, the base model's
+        # input embeddings must produce tensors that require_grad=True so the
+        # checkpointed graph can backprop through to the LoRA adapters.
+        if gradient_checkpointing and hasattr(self.model, "enable_input_require_grads"):
+            self.model.enable_input_require_grads()
 
         trl_trainer = TRLSFTTrainer(
             model=self.model,

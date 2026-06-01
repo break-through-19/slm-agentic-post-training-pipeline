@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python -)",
+      "Bash(2>&1)",
+      "Bash(python -c \"import trl; print\\(trl.__version__\\)\")",
+      "Bash(python -c \"from trl import SFTConfig; import inspect; params = inspect.signature\\(SFTConfig.__init__\\).parameters; print\\([p for p in params if 'seq' in p or 'length' in p or 'max' in p]\\)\")"
+    ]
+  }
+}

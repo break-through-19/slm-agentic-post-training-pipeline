@@ -7,12 +7,15 @@ Pure functions — no model required.  Used by:
   - Stage 2A DPO preference pair generation (generate_pairs.py)
 
 Grading checks, in order:
+  0. Irrelevance: if expected_calls is empty, correct iff no tool call produced
   1. At least one <tool_call> block is present (else: no_tool_call)
   2. Number of predicted calls matches expected (else: extra_tool_call)
   3. For each (predicted, expected) pair:
      a. Function name matches exactly (else: wrong_function)
      b. All expected argument keys are present (else: missing_argument)
      c. Argument values match after type coercion (else: wrong_argument_type)
+        When the expected value is a list, any element in that list is accepted
+        (BFCL possible-answer format).
 """
 from __future__ import annotations
 
@@ -94,18 +97,28 @@ def _grade_arguments(
     """
     Compare predicted arguments against expected.
     Returns (all_correct, failure_category_or_None).
+
+    When an expected argument value is a list (BFCL possible-answer format),
+    the predicted value is accepted if it matches any element in that list.
+    When it is a scalar, exact equality after type coercion is required.
     """
     for expected_key, expected_value in expected_args.items():
         if expected_key not in predicted_args:
             return False, FAILURE_MISSING_ARGUMENT
 
         predicted_value = _coerce_value(predicted_args[expected_key])
-        expected_value = _coerce_value(expected_value)
 
-        if type(predicted_value) is not type(expected_value):
-            return False, FAILURE_WRONG_ARGUMENT_TYPE
-        if predicted_value != expected_value:
-            return False, FAILURE_WRONG_ARGUMENT_TYPE
+        if isinstance(expected_value, list):
+            # BFCL possible-answer: accept any value in the acceptable list
+            acceptable_values = [_coerce_value(v) for v in expected_value]
+            if predicted_value not in acceptable_values:
+                return False, FAILURE_WRONG_ARGUMENT_TYPE
+        else:
+            expected_value = _coerce_value(expected_value)
+            if type(predicted_value) is not type(expected_value):
+                return False, FAILURE_WRONG_ARGUMENT_TYPE
+            if predicted_value != expected_value:
+                return False, FAILURE_WRONG_ARGUMENT_TYPE
 
     return True, None
 
@@ -135,10 +148,31 @@ def grade(model_output: str, expected_calls: list[dict]) -> GradeResult:
     """
     Grade the raw text output of a model against a list of expected tool calls.
 
-    Handles single-call and parallel (multi-call) scenarios.
+    Handles single-call, parallel (multi-call), and irrelevance scenarios.
     Returns a GradeResult with correct=True only when every call matches.
+
+    Irrelevance: when expected_calls is empty the correct response is to
+    produce no tool call.  Any tool call produced is marked as extra_tool_call.
     """
     predicted_calls = extract_tool_calls(model_output)
+
+    # Irrelevance: model should abstain from calling any tool
+    if not expected_calls:
+        if not predicted_calls:
+            return GradeResult(
+                correct=True,
+                reward=1.0,
+                failure_category=None,
+                predicted_calls=[],
+                expected_calls=[],
+            )
+        return GradeResult(
+            correct=False,
+            reward=0.0,
+            failure_category=FAILURE_EXTRA_TOOL_CALL,
+            predicted_calls=predicted_calls,
+            expected_calls=[],
+        )
 
     if not predicted_calls:
         return GradeResult(

@@ -128,52 +128,75 @@ def test_is_valid_example_rejects_empty_answers():
 
 
 # ---------------------------------------------------------------------------
-# BFCL example parsing
+# BFCL v3 internal helpers
 # ---------------------------------------------------------------------------
 
-def test_parse_bfcl_example_plain_string_question():
+def test_extract_query_from_plain_string():
+    from pipeline.data.bfcl import _extract_query
+
+    assert _extract_query("What is the weather in Seattle?") == "What is the weather in Seattle?"
+
+
+def test_extract_query_from_nested_list_of_messages():
+    # BFCL v3 format: list[list[dict]]
+    from pipeline.data.bfcl import _extract_query
+
+    question = [[
+        {"role": "user", "content": "First turn"},
+        {"role": "assistant", "content": "Response"},
+    ], [
+        {"role": "user", "content": "Final user query"},
+    ]]
+    assert _extract_query(question) == "Final user query"
+
+
+def test_extract_query_flat_list_of_messages():
+    # Older format: list[dict] (flat, not nested)
+    from pipeline.data.bfcl import _extract_query
+
+    question = [
+        {"role": "user", "content": "First turn"},
+        {"role": "assistant", "content": "Response"},
+        {"role": "user", "content": "Last query"},
+    ]
+    assert _extract_query(question) == "Last query"
+
+
+def test_normalise_ground_truth_bfcl_possible_answer_format():
+    from pipeline.data.bfcl import _normalise_ground_truth
+
+    raw = [{"calculate_triangle_area": {"base": [10], "height": [5], "unit": ["units", ""]}}]
+    result = _normalise_ground_truth(raw)
+    assert len(result) == 1
+    assert result[0]["name"] == "calculate_triangle_area"
+    assert result[0]["arguments"]["base"] == [10]
+    assert result[0]["arguments"]["unit"] == ["units", ""]
+
+
+def test_normalise_ground_truth_empty():
+    from pipeline.data.bfcl import _normalise_ground_truth
+
+    assert _normalise_ground_truth([]) == []
+
+
+# ---------------------------------------------------------------------------
+# parse_bfcl_example pass-through (already-normalised rows)
+# ---------------------------------------------------------------------------
+
+def test_parse_bfcl_example_passthrough_normalised_row():
     from pipeline.data.bfcl import parse_bfcl_example
 
-    raw = {
-        "question": "What is the weather in Seattle?",
-        "function": [{"name": "get_weather", "parameters": {}}],
-        "ground_truth": [{"name": "get_weather", "arguments": {"city": "Seattle"}}],
+    row = {
+        "query": "What is the weather in Seattle?",
+        "tools": [{"name": "get_weather", "parameters": {}}],
+        "expected_calls": [{"name": "get_weather", "arguments": {"city": ["Seattle"]}}],
+        "category": "simple",
     }
-    parsed = parse_bfcl_example(raw, category="simple")
+    parsed = parse_bfcl_example(row, category="simple")
     assert parsed["query"] == "What is the weather in Seattle?"
     assert len(parsed["tools"]) == 1
     assert len(parsed["expected_calls"]) == 1
     assert parsed["category"] == "simple"
-
-
-def test_parse_bfcl_example_list_of_messages_question():
-    from pipeline.data.bfcl import parse_bfcl_example
-
-    raw = {
-        "question": [
-            {"role": "user", "content": "First turn"},
-            {"role": "assistant", "content": "Response"},
-            {"role": "user", "content": "Final user query"},
-        ],
-        "function": [{"name": "search", "parameters": {}}],
-        "ground_truth": [{"name": "search", "arguments": {}}],
-    }
-    parsed = parse_bfcl_example(raw)
-    # Should extract the last user message
-    assert parsed["query"] == "Final user query"
-
-
-def test_parse_bfcl_example_json_string_function_field():
-    from pipeline.data.bfcl import parse_bfcl_example
-
-    raw = {
-        "question": "Search for something",
-        "function": json.dumps([{"name": "search", "parameters": {}}]),
-        "ground_truth": json.dumps([{"name": "search", "arguments": {"q": "cats"}}]),
-    }
-    parsed = parse_bfcl_example(raw)
-    assert isinstance(parsed["tools"], list)
-    assert isinstance(parsed["expected_calls"], list)
 
 
 def test_parse_bfcl_example_handles_missing_fields_gracefully():

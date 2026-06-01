@@ -64,8 +64,7 @@ def load_base_model(cfg: DictConfig) -> PreTrainedModel:
     if not load_in_4bit:
         model = AutoModelForCausalLM.from_pretrained(
             cfg.model.name_or_path,
-            torch_dtype=torch_dtype,
-            trust_remote_code=True,
+            dtype=torch_dtype,
         )
         if device != "cpu":
             model = model.to(device)

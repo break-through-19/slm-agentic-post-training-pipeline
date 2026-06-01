@@ -4,6 +4,10 @@ Prompt formatting for Qwen2.5-Instruct tool-calling.
 All stages (SFT, DPO, GRPO, evaluation) share the same formatting functions so
 that train-time and inference-time prompts are byte-for-byte identical.
 
+Key design: the tokenizer's native tools= parameter is used in apply_chat_template
+rather than a manually written system prompt. This guarantees the model sees the
+exact prompt format it was trained on, reliably triggering <tool_call> output.
+
 Tool-call format used by Qwen2.5:
     <tool_call>
     {"name": "fn_name", "arguments": {...}}
@@ -33,31 +37,22 @@ _TOOL_CALL_RE = re.compile(
 # ---------------------------------------------------------------------------
 
 
-def _build_system_prompt_with_tools(tools: list[dict]) -> str:
+def _normalise_tools_for_tokenizer(tools: list[dict]) -> list[dict]:
     """
-    Render a list of tool dicts into the Qwen2.5 system-prompt format.
-
-    Each tool is wrapped in the OpenAI function-call schema convention:
+    Ensure every tool dict is in the OpenAI function-schema format that
+    Qwen2.5's apply_chat_template(tools=...) expects:
       {"type": "function", "function": {name, description, parameters}}
-    If a tool already has a "function" key it is kept as-is.
-    """
-    tool_json_lines = []
-    for tool in tools:
-        if "function" in tool:
-            tool_json_lines.append(json.dumps(tool, ensure_ascii=False))
-        else:
-            tool_json_lines.append(
-                json.dumps({"type": "function", "function": tool}, ensure_ascii=False)
-            )
 
-    tools_block = "\n".join(tool_json_lines)
-    return (
-        "You are a helpful assistant with access to the following tools.\n\n"
-        "# Tools\n\n"
-        "You may call one or more functions to assist with the user query.\n\n"
-        "Function signatures are provided within <tools></tools> XML tags:\n"
-        f"<tools>\n{tools_block}\n</tools>"
-    )
+    Tools from xLAM arrive with just name/description/parameters at the top
+    level; this wraps them so the tokenizer recognises them correctly.
+    """
+    normalised = []
+    for tool in tools:
+        if "type" in tool and "function" in tool:
+            normalised.append(tool)
+        else:
+            normalised.append({"type": "function", "function": tool})
+    return normalised
 
 
 def _render_tool_call_response(expected_calls: list[dict]) -> str:
@@ -65,8 +60,17 @@ def _render_tool_call_response(expected_calls: list[dict]) -> str:
     rendered_calls = []
     for call in expected_calls:
         name = call.get("name", "")
-        arguments = call.get("arguments", call.get("args", {}))
-        payload = json.dumps({"name": name, "arguments": arguments}, ensure_ascii=False)
+        # BFCL possible-answer format stores argument values as lists;
+        # take the first acceptable value for each argument when building
+        # the training target so the model learns a single concrete output.
+        raw_arguments = call.get("arguments", call.get("args", {}))
+        concrete_arguments = {
+            key: (vals[0] if isinstance(vals, list) and vals else vals)
+            for key, vals in raw_arguments.items()
+        }
+        payload = json.dumps(
+            {"name": name, "arguments": concrete_arguments}, ensure_ascii=False
+        )
         rendered_calls.append(f"{TOOL_CALL_OPEN_TAG}\n{payload}\n{TOOL_CALL_CLOSE_TAG}")
     return "\n".join(rendered_calls)
 
@@ -86,28 +90,34 @@ def format_sft_example(
     """
     Tokenize one xLAM example for SFT.
 
-    Returns a dict with input_ids, attention_mask, and labels where the
-    prompt tokens are masked to -100 so cross-entropy is only computed on
-    the assistant tool-call response.
+    Uses the tokenizer's native tools= parameter so the system prompt matches
+    exactly what the model was pre-trained on.  Returns a dict with
+    input_ids, attention_mask, and labels where prompt tokens are masked to
+    -100 so cross-entropy is computed on the assistant response only.
 
-    Returns empty lists for input_ids/labels/attention_mask when the example
-    is too long or the assistant turn would produce no learnable tokens.
+    Returns empty lists when the example is too long or produces no
+    learnable tokens after masking.
     """
-    system_prompt = _build_system_prompt_with_tools(tools)
+    normalised_tools = _normalise_tools_for_tokenizer(tools)
     assistant_response = _render_tool_call_response(expected_calls)
 
     full_messages = [
-        {"role": "system", "content": system_prompt},
         {"role": "user", "content": query},
         {"role": "assistant", "content": assistant_response},
     ]
-    prompt_only_messages = full_messages[:2]
+    prompt_only_messages = [{"role": "user", "content": query}]
 
     full_text = tokenizer.apply_chat_template(
-        full_messages, tokenize=False, add_generation_prompt=False
+        full_messages,
+        tools=normalised_tools,
+        tokenize=False,
+        add_generation_prompt=False,
     )
     prompt_text = tokenizer.apply_chat_template(
-        prompt_only_messages, tokenize=False, add_generation_prompt=True
+        prompt_only_messages,
+        tools=normalised_tools,
+        tokenize=False,
+        add_generation_prompt=True,
     )
 
     full_encoding = tokenizer(
@@ -141,16 +151,19 @@ def format_inference_prompt(
     tokenizer: PreTrainedTokenizer,
 ) -> str:
     """
-    Build a prompt string for generation (system + user turns only).
+    Build a prompt string for generation (user turn only; no assistant turn).
+
+    Uses the tokenizer's native tools= parameter so the system prompt the
+    model sees at inference time is identical to the one used during SFT.
     Used by the evaluator and the Stage 2 preference pair generator.
     """
-    system_prompt = _build_system_prompt_with_tools(tools)
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": query},
-    ]
+    normalised_tools = _normalise_tools_for_tokenizer(tools)
+    messages = [{"role": "user", "content": query}]
     return tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
+        messages,
+        tools=normalised_tools,
+        tokenize=False,
+        add_generation_prompt=True,
     )
 
 

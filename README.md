@@ -37,6 +37,7 @@ Online RL using BFCL-style verifiable rewards. Group-relative advantages replace
 
 ```
 slm-agentic-post-training-pipeline/
+├── .env.example           # token config template — copy to .env and fill in
 ├── configs/
 │   ├── base.yaml          # shared defaults (model, LoRA, evaluation)
 │   └── sft.yaml           # Stage 1 training hyperparameters
@@ -103,11 +104,58 @@ pip install -e ".[dev,quant]"
 
 ---
 
+## Authentication
+
+The xLAM-60K training dataset is gated on HuggingFace and requires a token. The BFCL evaluation dataset is public and needs no token.
+
+### Step 1 — Create a HuggingFace Read token
+
+1. Go to **https://huggingface.co/settings/tokens**
+2. Click **New token**
+3. Set type to **Read** (write access is not needed)
+4. Copy the token (starts with `hf_...`)
+
+### Step 2 — Accept the xLAM dataset terms
+
+Visit **https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k** and click **"Agree and access repository"**. This is a one-time action per HuggingFace account.
+
+### Step 3 — Configure your token
+
+Copy the provided template and add your token:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env`:
+
+```
+HF_TOKEN=hf_your_token_here
+```
+
+The `.env` file is git-ignored and will never be committed. The pipeline loads it automatically on startup — no `export` command needed.
+
+**Alternative:** set the token directly in your shell (takes priority over `.env`):
+
+```bash
+export HF_TOKEN="hf_your_token_here"
+```
+
+Or use the HuggingFace CLI for a persistent login across all projects:
+
+```bash
+huggingface-cli login   # paste token when prompted
+```
+
+---
+
 ## Running the Pipeline
 
 All commands use a single script with two sub-commands: `baseline` and `sft`.
 
 ### Stage 0 — Baseline Evaluation
+
+No authentication required — BFCL is a public dataset.
 
 ```bash
 # Auto-detect best device (CUDA → MPS → CPU)
@@ -122,13 +170,15 @@ python scripts/run_pipeline.py baseline --categories simple irrelevance
 # Cap samples per category (faster dev run)
 python scripts/run_pipeline.py baseline --max-eval-samples 100
 
-# Smoke test — 10 samples, float32, CPU (< 1 minute, no GPU needed)
-python scripts/run_pipeline.py baseline --smoke
+# Smoke test — 5 samples/category, ~2 min on Apple Silicon
+python scripts/run_pipeline.py baseline --smoke --device mps
 ```
 
 Results are written to `outputs/baseline_results.json`.
 
 ### Stage 1 — Supervised Fine-Tuning
+
+Requires HuggingFace authentication (see [Authentication](#authentication) above).
 
 ```bash
 # Full run (15K samples, 3 epochs, auto device)
@@ -143,19 +193,27 @@ python scripts/run_pipeline.py sft --max-samples 5000
 # Skip BFCL eval after training
 python scripts/run_pipeline.py sft --skip-eval
 
-# Smoke test — 64 samples, 1 epoch, 10 eval samples per category
-python scripts/run_pipeline.py sft --smoke
-
-# Smoke test on Apple Silicon
+# Smoke test — 32 samples, 5 training steps, ~10 min on Apple Silicon
 python scripts/run_pipeline.py sft --smoke --device mps
+
+# Smoke test WITH post-training BFCL eval (adds ~20 min)
+python scripts/run_pipeline.py sft --smoke --device mps --run-eval
 ```
 
 Checkpoints and BFCL results are written to `outputs/sft/`.
 
+**Smoke mode notes (`--smoke`):**
+
+- Caps training at 5 steps regardless of `num_epochs` — designed to validate the pipeline end-to-end, not to produce a useful model.
+- Defaults to skipping BFCL evaluation after training, since 5 steps cannot meaningfully change the baseline scores. Use `--run-eval` to opt back in.
+- Forces `float32` precision on MPS to avoid known bf16 NaN-gradient issues on Apple Silicon. The default `bfloat16` is still used on CUDA.
+- Sets `max_seq_len=512` so each training step finishes quickly.
+
 ### Running Tests
 
+No authentication or GPU required — tests use a mock tokenizer.
+
 ```bash
-# Full suite (no GPU required — uses a mock tokenizer)
 python -m pytest tests/ -v
 
 # With coverage
@@ -174,10 +232,39 @@ Key `base.yaml` settings:
 |-----|---------|-------------|
 | `model.name_or_path` | `Qwen/Qwen2.5-1.5B-Instruct` | HuggingFace model ID |
 | `model.device` | `auto` | `auto` \| `cuda` \| `mps` \| `cpu` |
-| `model.torch_dtype` | `bfloat16` | `bfloat16` \| `float16` \| `float32` |
+| `model.torch_dtype` | `bfloat16` | `bfloat16` \| `float16` \| `float32` (use float32 on MPS) |
 | `model.load_in_4bit` | `false` | 4-bit NF4 quant (CUDA + bitsandbytes only) |
 | `lora.r` | `16` | LoRA rank |
 | `evaluation.max_eval_samples` | `null` | Per-category cap (`null` = full set) |
+
+Key `sft.yaml` settings:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `training.max_samples` | `15000` | xLAM examples to use for training |
+| `training.max_steps` | `-1` | Hard cap on training steps (`-1` = use `num_epochs`) |
+| `training.num_epochs` | `3` | Training epochs (ignored when `max_steps > 0`) |
+| `training.per_device_batch_size` | `4` | Per-GPU batch size |
+| `training.learning_rate` | `2e-4` | AdamW learning rate |
+
+CLI flags (sub-command specific):
+
+| Flag | Sub-command | Description |
+|------|-------------|-------------|
+| `--device {auto,cuda,mps,cpu}` | both | Override compute device |
+| `--smoke` | both | Tiny fast run for validation, not a real experiment |
+| `--max-eval-samples N` | both | Cap eval samples per BFCL category |
+| `--categories ...` | both | Restrict eval to a subset of BFCL categories |
+| `--max-samples N` | sft | Override training sample count |
+| `--skip-eval` | sft | Skip BFCL eval after training |
+| `--run-eval` | sft | Force BFCL eval in smoke mode (off by default) |
+
+Environment variables (set in `.env` or shell):
+
+| Variable | Required for | Description |
+|----------|-------------|-------------|
+| `HF_TOKEN` | Stage 1 SFT | Read token for gated xLAM-60K dataset |
+| `WANDB_API_KEY` | Optional | Enables W&B logging when `wandb.enabled=true` |
 
 ---
 

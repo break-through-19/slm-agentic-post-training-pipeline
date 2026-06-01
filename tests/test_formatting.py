@@ -9,7 +9,7 @@ import pytest
 from pipeline.formatting.chat_template import (
     TOOL_CALL_CLOSE_TAG,
     TOOL_CALL_OPEN_TAG,
-    _build_system_prompt_with_tools,
+    _normalise_tools_for_tokenizer,
     _render_tool_call_response,
     extract_tool_calls,
     format_inference_prompt,
@@ -18,7 +18,9 @@ from pipeline.formatting.chat_template import (
 
 
 # ---------------------------------------------------------------------------
-# Minimal mock tokenizer that avoids loading any real weights
+# Minimal mock tokenizer — avoids loading any real weights.
+# apply_chat_template accepts the tools= kwarg so the normalisation path
+# is exercised without needing a real Qwen2.5 tokenizer.
 # ---------------------------------------------------------------------------
 
 def _make_mock_tokenizer(vocab_size: int = 100):
@@ -27,14 +29,17 @@ def _make_mock_tokenizer(vocab_size: int = 100):
     tokenizer.pad_token_id = 0
     tokenizer.eos_token = "<eos>"
 
-    def apply_chat_template(messages, tokenize=False, add_generation_prompt=False):
+    def apply_chat_template(
+        messages, tools=None, tokenize=False, add_generation_prompt=False
+    ):
         parts = [f"<{m['role']}>{m['content']}</{m['role']}>" for m in messages]
+        if tools:
+            parts.insert(0, f"<tools>{json.dumps(tools)}</tools>")
         if add_generation_prompt:
             parts.append("<assistant>")
         return "".join(parts)
 
     def tokenize_fn(text, truncation=True, max_length=2048, return_tensors=None):
-        # Deterministic fake token IDs based on character positions
         ids = [ord(c) % vocab_size for c in text[:max_length]]
         return {"input_ids": ids, "attention_mask": [1] * len(ids)}
 
@@ -44,38 +49,34 @@ def _make_mock_tokenizer(vocab_size: int = 100):
 
 
 # ---------------------------------------------------------------------------
-# _build_system_prompt_with_tools
+# _normalise_tools_for_tokenizer
 # ---------------------------------------------------------------------------
 
-def test_system_prompt_contains_tool_name():
+def test_normalise_wraps_bare_tool_in_function_schema():
     tools = [{"name": "get_weather", "description": "Gets weather", "parameters": {}}]
-    prompt = _build_system_prompt_with_tools(tools)
-    assert "get_weather" in prompt
-    assert "<tools>" in prompt
-    assert "</tools>" in prompt
+    result = _normalise_tools_for_tokenizer(tools)
+    assert result[0]["type"] == "function"
+    assert result[0]["function"]["name"] == "get_weather"
 
 
-def test_system_prompt_wraps_tool_in_function_schema():
-    tools = [{"name": "search", "description": "Search the web", "parameters": {}}]
-    prompt = _build_system_prompt_with_tools(tools)
-    assert '"type": "function"' in prompt
-
-
-def test_system_prompt_passthrough_for_already_wrapped_tool():
+def test_normalise_does_not_double_wrap_already_schema_tool():
     tools = [{"type": "function", "function": {"name": "fn", "parameters": {}}}]
-    prompt = _build_system_prompt_with_tools(tools)
-    # Should not double-wrap
-    assert prompt.count('"type": "function"') == 1
+    result = _normalise_tools_for_tokenizer(tools)
+    assert len(result) == 1
+    assert result[0]["type"] == "function"
+    # Should not be nested twice
+    assert "function" not in result[0]["function"]
 
 
-def test_system_prompt_multiple_tools():
+def test_normalise_handles_multiple_tools():
     tools = [
         {"name": "tool_a", "description": "a", "parameters": {}},
         {"name": "tool_b", "description": "b", "parameters": {}},
     ]
-    prompt = _build_system_prompt_with_tools(tools)
-    assert "tool_a" in prompt
-    assert "tool_b" in prompt
+    result = _normalise_tools_for_tokenizer(tools)
+    assert len(result) == 2
+    names = {r["function"]["name"] for r in result}
+    assert names == {"tool_a", "tool_b"}
 
 
 # ---------------------------------------------------------------------------
@@ -100,6 +101,16 @@ def test_render_multiple_tool_calls():
     assert rendered.count(TOOL_CALL_OPEN_TAG) == 2
     assert "fn_a" in rendered
     assert "fn_b" in rendered
+
+
+def test_render_picks_first_value_from_bfcl_possible_answer_list():
+    """BFCL possible-answer format stores acceptable values as lists;
+    the renderer should pick the first concrete value for the training target."""
+    calls = [{"name": "calc", "arguments": {"unit": ["units", ""], "base": [10]}}]
+    rendered = _render_tool_call_response(calls)
+    parsed = extract_tool_calls(rendered)
+    assert parsed[0]["arguments"]["unit"] == "units"
+    assert parsed[0]["arguments"]["base"] == 10
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +180,7 @@ def test_format_sft_example_labels_match_input_ids_length():
         expected_calls=[{"name": "book_flight", "arguments": {"destination": "NYC"}}],
         tokenizer=tokenizer,
     )
-    if result["input_ids"]:  # non-empty (not filtered out)
+    if result["input_ids"]:
         assert len(result["input_ids"]) == len(result["labels"])
         assert len(result["input_ids"]) == len(result["attention_mask"])
 
@@ -183,7 +194,6 @@ def test_format_sft_example_prompt_tokens_are_masked():
         tokenizer=tokenizer,
     )
     if result["input_ids"]:
-        # At least the prompt tokens should be masked
         assert -100 in result["labels"]
 
 
@@ -209,3 +219,15 @@ def test_format_inference_prompt_contains_tool_name():
         tokenizer=tokenizer,
     )
     assert "web_search" in prompt
+
+
+def test_format_inference_prompt_passes_tools_to_tokenizer():
+    """Verify tools= is forwarded to apply_chat_template (not a manual system prompt)."""
+    tokenizer = _make_mock_tokenizer()
+    prompt = format_inference_prompt(
+        query="Do something",
+        tools=[{"name": "my_fn", "description": "Does something", "parameters": {}}],
+        tokenizer=tokenizer,
+    )
+    # The mock embeds tools as <tools>...</tools> when tools= kwarg is received
+    assert "<tools>" in prompt

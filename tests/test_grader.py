@@ -184,3 +184,53 @@ def test_grade_result_includes_predicted_and_expected():
     assert len(result.predicted_calls) == 1
     assert len(result.expected_calls) == 1
     assert result.predicted_calls[0]["name"] == "wrong_fn"
+
+
+# ---------------------------------------------------------------------------
+# Irrelevance: expected_calls=[] means model should produce no tool call
+# ---------------------------------------------------------------------------
+
+def test_irrelevance_correct_when_no_tool_call_produced():
+    result = grade("I cannot help with that using any available tool.", [])
+    assert result.correct is True
+    assert result.reward == 1.0
+
+
+def test_irrelevance_wrong_when_tool_call_produced():
+    output = _make_model_output("some_fn", {})
+    result = grade(output, [])
+    assert result.correct is False
+    assert result.failure_category == FAILURE_EXTRA_TOOL_CALL
+
+
+# ---------------------------------------------------------------------------
+# BFCL possible-answer format: argument values as lists of acceptable answers
+# ---------------------------------------------------------------------------
+
+def test_possible_answer_accepts_first_value_in_list():
+    output = _make_model_output("calc_area", {"unit": "units"})
+    expected = [{"name": "calc_area", "arguments": {"unit": ["units", ""]}}]
+    result = grade(output, expected)
+    assert result.correct is True
+
+
+def test_possible_answer_accepts_alternate_value_in_list():
+    output = _make_model_output("calc_area", {"unit": ""})
+    expected = [{"name": "calc_area", "arguments": {"unit": ["units", ""]}}]
+    result = grade(output, expected)
+    assert result.correct is True
+
+
+def test_possible_answer_rejects_value_not_in_list():
+    output = _make_model_output("calc_area", {"unit": "meters"})
+    expected = [{"name": "calc_area", "arguments": {"unit": ["units", ""]}}]
+    result = grade(output, expected)
+    assert result.correct is False
+    assert result.failure_category == FAILURE_WRONG_ARGUMENT_TYPE
+
+
+def test_possible_answer_integer_list():
+    output = _make_model_output("set_timer", {"minutes": 30})
+    expected = [{"name": "set_timer", "arguments": {"minutes": [30, 29]}}]
+    result = grade(output, expected)
+    assert result.correct is True

@@ -16,7 +16,7 @@ import torch
 from omegaconf import DictConfig
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
-from pipeline.data.bfcl import load_bfcl_category, parse_bfcl_example
+from pipeline.data.bfcl import load_bfcl_category, parse_bfcl_example  # returns list[dict]
 from pipeline.evaluation.metrics import (
     CategoryMetrics,
     EvalSummary,
@@ -71,8 +71,10 @@ def evaluate_category(
     for step, raw_row in enumerate(dataset):
         example = parse_bfcl_example(raw_row, category=category)
 
-        if not example["tools"] or not example["expected_calls"]:
-            logger.debug("Skipping row %d — missing tools or expected_calls", step)
+        # expected_calls is intentionally empty for irrelevance examples —
+        # only skip rows that have no tool definitions at all.
+        if not example["tools"]:
+            logger.debug("Skipping row %d — no tool definitions present", step)
             continue
 
         prompt = format_inference_prompt(
@@ -86,7 +88,9 @@ def evaluate_category(
         result = grade(model_output, example["expected_calls"])
         grade_results.append(result)
 
-        if (step + 1) % 50 == 0:
+        # Log every example on small runs; every 50 on full-scale runs
+        log_every = max(1, min(50, len(dataset) // 5))
+        if (step + 1) % log_every == 0:
             running_accuracy = sum(r.correct for r in grade_results) / len(grade_results)
             logger.info(
                 "  [%s] %d/%d — running accuracy: %.3f",
