@@ -286,13 +286,20 @@ def run_sft(args: argparse.Namespace) -> None:
         lambda ex: len(ex["input_ids"]) > 0, desc="Dropping empty examples"
     )
 
-    split_ratio = cfg.training.get("train_split", 0.95)
-    splits = full_dataset.train_test_split(
-        test_size=1.0 - split_ratio, seed=cfg.data.seed
-    )
-    train_dataset = splits["train"]
-    eval_dataset = splits["test"]
-    logger.info("Dataset split — train: %d | eval: %d", len(train_dataset), len(eval_dataset))
+    disable_in_training_eval = cfg.training.get("disable_in_training_eval", False)
+
+    if disable_in_training_eval:
+        train_dataset = full_dataset
+        eval_dataset = None
+        logger.info("Dataset — train: %d | in-training eval: disabled", len(train_dataset))
+    else:
+        split_ratio = cfg.training.get("train_split", 0.95)
+        splits = full_dataset.train_test_split(
+            test_size=1.0 - split_ratio, seed=cfg.data.seed
+        )
+        train_dataset = splits["train"]
+        eval_dataset = splits["test"]
+        logger.info("Dataset split — train: %d | eval: %d", len(train_dataset), len(eval_dataset))
 
     bfcl_eval_fn = None
     if not args.skip_eval:
