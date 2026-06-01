@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
 """
-End-to-end baseline pipeline runner.
+End-to-end post-training pipeline runner.
 
-Two sub-commands:
+Sub-commands (one per pipeline stage):
 
-  baseline   Stage 0 — evaluate the raw Qwen2.5-1.5B-Instruct on BFCL.
-             Produces the floor score that all post-training stages compare against.
+  baseline        Stage 0  — evaluate the raw Qwen2.5-1.5B-Instruct on BFCL.
+                  Produces the floor score every later stage compares against.
 
-  sft        Stage 1 — supervised fine-tuning on xLAM-60K with LoRA,
-             followed by BFCL evaluation to measure improvement.
+  sft             Stage 1  — supervised fine-tuning on xLAM-60K with LoRA,
+                  followed by BFCL evaluation.
+
+  generate-pairs  Stage 2A data prep — sample completions from the SFT model,
+                  BFCL-grade them, and write (chosen, rejected) preference pairs.
+
+  dpo             Stage 2A — Direct Preference Optimisation on the generated
+                  pairs, followed by BFCL evaluation.
+
+  grpo            Stage 2B — Group Relative Policy Optimisation (online RL with
+                  the verifiable BFCL reward), followed by BFCL evaluation.
 
 Device options
 --------------
@@ -17,25 +26,30 @@ Device options
   --device mps    Apple Silicon (M1/M2/M3)
   --device cpu    CPU only (slow; fine for smoke tests)
 
+Typical Stage 2 order
+---------------------
+  python scripts/run_pipeline.py sft                       # produce SFT adapter
+  python scripts/run_pipeline.py generate-pairs            # produce DPO pairs
+  python scripts/run_pipeline.py dpo                        # Stage 2A
+  python scripts/run_pipeline.py grpo                       # Stage 2B (GPU advised)
+
 Quick-start examples
 --------------------
-  # Full baseline evaluation (auto device):
-  python scripts/run_pipeline.py baseline
-
-  # Smoke test on CPU — 10 examples per BFCL category, no download wait:
-  python scripts/run_pipeline.py baseline --smoke
-
   # Baseline on Apple Silicon:
   python scripts/run_pipeline.py baseline --device mps
 
-  # SFT smoke test (64 training examples, 1 epoch):
+  # SFT smoke test:
   python scripts/run_pipeline.py sft --smoke --device mps
 
-  # Full SFT run, skip BFCL eval after training:
-  python scripts/run_pipeline.py sft --skip-eval
+  # End-to-end Stage 2 smoke test on Apple Silicon (no SFT checkpoint needed):
+  python scripts/run_pipeline.py generate-pairs --smoke --device mps
+  python scripts/run_pipeline.py dpo  --smoke --device mps
+  python scripts/run_pipeline.py grpo --smoke --device mps
 
-  # Evaluate specific BFCL categories only:
-  python scripts/run_pipeline.py baseline --categories simple irrelevance
+  # Real DPO run from a specific SFT checkpoint and pairs file:
+  python scripts/run_pipeline.py dpo \\
+      --sft-checkpoint outputs/sft/checkpoint-final \\
+      --pairs-path outputs/pairs/dpo_pairs.jsonl
 """
 from __future__ import annotations
 
@@ -136,6 +150,26 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_stage2_training_args(parser: argparse.ArgumentParser) -> None:
+    """Arguments shared by the dpo and grpo sub-commands."""
+    parser.add_argument(
+        "--sft-checkpoint", default=None, metavar="PATH",
+        help="Stage 1 SFT adapter to start from (default: from the stage config).",
+    )
+    parser.add_argument(
+        "--from-base", action="store_true",
+        help="Start from a fresh LoRA on the base model when no SFT checkpoint exists.",
+    )
+    parser.add_argument(
+        "--skip-eval", action="store_true",
+        help="Skip BFCL evaluation after training.",
+    )
+    parser.add_argument(
+        "--run-eval", action="store_true",
+        help="Force BFCL evaluation even in smoke mode (off by default in smoke).",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
@@ -190,6 +224,92 @@ def _print_results_table(results: dict) -> None:
         top_failure = max(failures, key=failures.get) if failures else "—"
         print(f"  {category:<12}  acc={acc:.4f}  ({correct}/{total})  top failure: {top_failure}")
     print("=" * 52 + "\n")
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers for the Stage 2 sub-commands (dpo, grpo, generate-pairs)
+# ---------------------------------------------------------------------------
+
+def _maybe_build_eval_fn(args, cfg, device):
+    """
+    Return a post-training BFCL eval closure, or None when eval is skipped.
+
+    Used by the dpo/grpo trainers via BaseTrainer's eval hook.
+    """
+    if getattr(args, "skip_eval", False):
+        return None
+
+    def bfcl_eval_fn(eval_model, eval_tokenizer):
+        summary = evaluate_bfcl(eval_model, eval_tokenizer, cfg, device)
+        return summary.to_dict()
+
+    return bfcl_eval_fn
+
+
+def _load_policy_model(cfg, sft_checkpoint, args, *, trainable):
+    """
+    Load the Stage 2 policy: the SFT adapter when available, else a fallback.
+
+    - If the SFT checkpoint exists, it is loaded (trainable for dpo/grpo).
+    - Otherwise, in --smoke or --from-base mode, we fall back to the base model
+      (with a fresh LoRA adapter when a trainable policy is required) so the
+      pipeline can be exercised without first running a full SFT.
+    - Otherwise we raise with actionable guidance.
+    """
+    from pipeline.model.loader import load_model, load_model_from_checkpoint
+
+    checkpoint_path = Path(sft_checkpoint) if sft_checkpoint else None
+    if checkpoint_path is not None and checkpoint_path.exists():
+        logger.info("Loading SFT adapter (trainable=%s) from %s", trainable, checkpoint_path)
+        return load_model_from_checkpoint(cfg, checkpoint_path, is_trainable=trainable)
+
+    allow_fallback = getattr(args, "smoke", False) or getattr(args, "from_base", False)
+    if allow_fallback:
+        logger.warning(
+            "No SFT checkpoint at %s — falling back to %s the base model.",
+            checkpoint_path,
+            "a fresh LoRA adapter on" if trainable else "plain",
+        )
+        return load_model(cfg, apply_lora=trainable)
+
+    raise FileNotFoundError(
+        f"\n\n{'='*65}\n"
+        f"  SFT checkpoint not found at: {checkpoint_path}\n\n"
+        f"  Options:\n"
+        f"    1. Run Stage 1 first:  python scripts/run_pipeline.py sft\n"
+        f"    2. Point at a checkpoint:  --sft-checkpoint PATH\n"
+        f"    3. Start from the base model:  --from-base\n"
+        f"{'='*65}\n"
+    )
+
+
+def _apply_training_smoke_overrides(cfg, args, output_dir: str) -> None:
+    """
+    Shrink a Stage 2 training run to a few fast steps for validation.
+
+    Shared by dpo and grpo; each then layers on its stage-specific knobs
+    (e.g. GRPO's num_generations). Mirrors the SFT smoke settings: tiny sample
+    count, 5-step cap, gradient checkpointing, float32 on MPS for stability,
+    and eval skipped unless --run-eval is passed.
+    """
+    cfg.training.max_samples = 32
+    cfg.training.max_steps = 5
+    cfg.training.num_epochs = 1
+    cfg.training.gradient_accumulation_steps = 1
+    cfg.training.gradient_checkpointing = True
+    cfg.training.save_steps = 5
+    cfg.data.max_seq_len = 512
+    cfg.output.dir = output_dir
+
+    if not args.run_eval:
+        args.skip_eval = True
+
+    effective_device = resolve_device(cfg.model.device)
+    if effective_device == "mps":
+        cfg.model.torch_dtype = "float32"
+        logger.info("MPS detected — using float32 for numerical stability")
+
+    _apply_smoke_settings_for_eval(cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -325,6 +445,168 @@ def run_sft(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Sub-command: generate-pairs (Stage 2A data prep)
+# ---------------------------------------------------------------------------
+
+def run_generate_pairs(args: argparse.Namespace) -> None:
+    from pipeline.generation.pair_generator import (
+        generate_preference_pairs,
+        save_pairs_jsonl,
+    )
+
+    base_cfg = OmegaConf.load("configs/base.yaml")
+    gen_cfg = OmegaConf.load("configs/generate_pairs.yaml")
+    cfg = OmegaConf.merge(base_cfg, gen_cfg)
+
+    if args.device:
+        cfg.model.device = args.device
+
+    if args.smoke:
+        cfg.generation.num_source_queries = 8
+        cfg.generation.rollouts_per_query = 4
+        cfg.generation.max_new_tokens = 128
+        cfg.generation.output_path = "outputs/pairs_smoke/dpo_pairs.jsonl"
+        if resolve_device(cfg.model.device) == "mps":
+            cfg.model.torch_dtype = "float32"
+        logger.info("Smoke mode: 8 queries x 4 rollouts, float32 on MPS")
+
+    # CLI overrides
+    if args.num_queries is not None:
+        cfg.generation.num_source_queries = args.num_queries
+    if args.rollouts is not None:
+        cfg.generation.rollouts_per_query = args.rollouts
+    if args.output_path:
+        cfg.generation.output_path = args.output_path
+
+    sft_checkpoint = args.sft_checkpoint or cfg.generation.get("sft_checkpoint")
+    device = resolve_device(cfg.model.device)
+    logger.info("Stage 2A data prep — generating preference pairs on device: %s", device)
+
+    # trainable=False: we only sample from the SFT model, never update it here
+    model, tokenizer = _load_policy_model(cfg, sft_checkpoint, args, trainable=False)
+
+    pairs = generate_preference_pairs(cfg, model, tokenizer, device)
+    if not pairs:
+        logger.warning(
+            "No preference pairs produced — every rollout for every query was "
+            "uniformly correct or uniformly incorrect. Try more queries/rollouts."
+        )
+    save_pairs_jsonl(pairs, cfg.generation.output_path)
+
+
+# ---------------------------------------------------------------------------
+# Sub-command: dpo (Stage 2A)
+# ---------------------------------------------------------------------------
+
+def run_dpo(args: argparse.Namespace) -> None:
+    import pipeline.data.preference  # registers "xlam_dpo" in the registry
+    from pipeline.data.registry import get_dataset
+    from pipeline.training.dpo_trainer import DPOTrainer
+
+    base_cfg = OmegaConf.load("configs/base.yaml")
+    dpo_cfg = OmegaConf.load("configs/dpo.yaml")
+    cfg = OmegaConf.merge(base_cfg, dpo_cfg)
+
+    if args.device:
+        cfg.model.device = args.device
+
+    if args.smoke:
+        _apply_training_smoke_overrides(cfg, args, output_dir="outputs/dpo_smoke")
+        cfg.training.per_device_batch_size = 2
+        # Consume the pairs produced by `generate-pairs --smoke`
+        cfg.training.pairs_path = "outputs/pairs_smoke/dpo_pairs.jsonl"
+        logger.info("Smoke mode: DPO on the smoke preference pairs, max 5 steps")
+
+    _apply_common_overrides(cfg, args)
+
+    if args.pairs_path:
+        cfg.training.pairs_path = args.pairs_path
+
+    sft_checkpoint = args.sft_checkpoint or cfg.training.get("sft_checkpoint")
+    device = resolve_device(cfg.model.device)
+    logger.info("Stage 2A — DPO on device: %s", device)
+
+    model, tokenizer = _load_policy_model(cfg, sft_checkpoint, args, trainable=True)
+
+    # DPO data is text (prompt/chosen/rejected) — TRL tokenises it internally
+    train_dataset = get_dataset("xlam_dpo", cfg)
+    logger.info("Loaded %d preference pairs", len(train_dataset))
+
+    trainer = DPOTrainer(
+        cfg=cfg,
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=train_dataset,
+        eval_fn=_maybe_build_eval_fn(args, cfg, device),
+    )
+    results = trainer.train()
+
+    if results:
+        output_path = Path(cfg.output.dir) / "dpo_bfcl_results.json"
+        output_path.write_text(json.dumps(results, indent=2))
+        logger.info("BFCL results saved to %s", output_path)
+        _print_results_table(results)
+
+
+# ---------------------------------------------------------------------------
+# Sub-command: grpo (Stage 2B)
+# ---------------------------------------------------------------------------
+
+def run_grpo(args: argparse.Namespace) -> None:
+    import pipeline.data.grpo_prompts  # registers "xlam_grpo" in the registry
+    from pipeline.data.registry import get_dataset
+    from pipeline.reward.grpo_reward import build_bfcl_reward_function
+    from pipeline.training.grpo_trainer import GRPOTrainer
+
+    base_cfg = OmegaConf.load("configs/base.yaml")
+    grpo_cfg = OmegaConf.load("configs/grpo.yaml")
+    cfg = OmegaConf.merge(base_cfg, grpo_cfg)
+
+    if args.device:
+        cfg.model.device = args.device
+
+    if args.smoke:
+        _apply_training_smoke_overrides(cfg, args, output_dir="outputs/grpo_smoke")
+        # GRPO needs per_device_batch_size to be a multiple of num_generations,
+        # and online rollouts are expensive — keep the group tiny for smoke.
+        cfg.training.num_generations = 2
+        cfg.training.per_device_batch_size = 2
+        cfg.training.max_completion_length = 128
+        cfg.training.max_steps = 2
+        logger.info("Smoke mode: GRPO with group size 2, max 2 steps")
+
+    _apply_common_overrides(cfg, args)
+
+    sft_checkpoint = args.sft_checkpoint or cfg.training.get("sft_checkpoint")
+    device = resolve_device(cfg.model.device)
+    logger.info("Stage 2B — GRPO on device: %s", device)
+
+    model, tokenizer = _load_policy_model(cfg, sft_checkpoint, args, trainable=True)
+
+    # GRPO prompts need the tokenizer to build the chat-templated prompt string
+    train_dataset = get_dataset("xlam_grpo", cfg, tokenizer=tokenizer)
+    logger.info("Loaded %d GRPO rollout prompts", len(train_dataset))
+
+    reward_fn = build_bfcl_reward_function()
+
+    trainer = GRPOTrainer(
+        cfg=cfg,
+        model=model,
+        tokenizer=tokenizer,
+        train_dataset=train_dataset,
+        reward_fn=reward_fn,
+        eval_fn=_maybe_build_eval_fn(args, cfg, device),
+    )
+    results = trainer.train()
+
+    if results:
+        output_path = Path(cfg.output.dir) / "grpo_bfcl_results.json"
+        output_path.write_text(json.dumps(results, indent=2))
+        logger.info("BFCL results saved to %s", output_path)
+        _print_results_table(results)
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -371,6 +653,52 @@ def build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    # --- generate-pairs (Stage 2A data prep) ---
+    pairs_parser = subparsers.add_parser(
+        "generate-pairs",
+        help="Stage 2A prep: sample from the SFT model and write DPO preference pairs.",
+    )
+    pairs_parser.add_argument("--config", default="configs/base.yaml", help=argparse.SUPPRESS)
+    pairs_parser.add_argument(
+        "--device", choices=VALID_DEVICES, default=None,
+        help="Compute device. Use 'mps' for Apple Silicon. Default: auto-detect.",
+    )
+    pairs_parser.add_argument("--smoke", action="store_true", help="Tiny run: 8 queries x 4 rollouts.")
+    pairs_parser.add_argument(
+        "--sft-checkpoint", default=None, metavar="PATH",
+        help="SFT adapter to sample from (default: from configs/generate_pairs.yaml).",
+    )
+    pairs_parser.add_argument(
+        "--from-base", action="store_true",
+        help="Sample from the base model when no SFT checkpoint exists.",
+    )
+    pairs_parser.add_argument("--num-queries", type=int, default=None, metavar="N",
+                              help="Number of source queries to sample from.")
+    pairs_parser.add_argument("--rollouts", type=int, default=None, metavar="N",
+                              help="Completions sampled per query.")
+    pairs_parser.add_argument("--output-path", default=None, metavar="PATH",
+                              help="Where to write the pairs JSONL.")
+
+    # --- dpo (Stage 2A) ---
+    dpo_parser = subparsers.add_parser(
+        "dpo",
+        help="Stage 2A: Direct Preference Optimisation on generated pairs, then evaluate.",
+    )
+    _add_common_args(dpo_parser)
+    _add_stage2_training_args(dpo_parser)
+    dpo_parser.add_argument(
+        "--pairs-path", default=None, metavar="PATH",
+        help="Preference pairs JSONL (default: from configs/dpo.yaml).",
+    )
+
+    # --- grpo (Stage 2B) ---
+    grpo_parser = subparsers.add_parser(
+        "grpo",
+        help="Stage 2B: online GRPO with the verifiable BFCL reward, then evaluate.",
+    )
+    _add_common_args(grpo_parser)
+    _add_stage2_training_args(grpo_parser)
+
     return parser
 
 
@@ -378,7 +706,12 @@ if __name__ == "__main__":
     arg_parser = build_arg_parser()
     parsed_args = arg_parser.parse_args()
 
-    if parsed_args.command == "baseline":
-        run_baseline(parsed_args)
-    elif parsed_args.command == "sft":
-        run_sft(parsed_args)
+    # Dispatch table keeps the entry point flat as stages are added
+    COMMAND_DISPATCH = {
+        "baseline": run_baseline,
+        "sft": run_sft,
+        "generate-pairs": run_generate_pairs,
+        "dpo": run_dpo,
+        "grpo": run_grpo,
+    }
+    COMMAND_DISPATCH[parsed_args.command](parsed_args)

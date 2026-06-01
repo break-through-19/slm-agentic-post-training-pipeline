@@ -1,0 +1,21 @@
+# Preference-pair generation (Stage 2A data prep).
+# Merged on top of base.yaml at runtime; only overrides are listed here.
+#
+# Samples several completions per query from the SFT model, grades each with
+# the BFCL verifier, then pairs a correct completion (chosen) with an incorrect
+# one (rejected). Queries where every rollout passes or every rollout fails are
+# discarded — they carry no preference signal.
+
+generation:
+  sft_checkpoint: "outputs/sft/checkpoint-final"
+  source_dataset: "xlam"          # source of queries + ground-truth answers
+  num_source_queries: 2000        # how many xLAM queries to sample from
+  rollouts_per_query: 8           # completions sampled per query
+  max_pairs_per_query: 1          # how many (chosen, rejected) pairs to emit
+  temperature: 0.8
+  top_p: 0.95
+  max_new_tokens: 256
+  output_path: "outputs/pairs/dpo_pairs.jsonl"
+
+output:
+  dir: "outputs/pairs"

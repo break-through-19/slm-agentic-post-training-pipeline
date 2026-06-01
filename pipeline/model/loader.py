@@ -92,13 +92,24 @@ def load_model(
 
 
 def load_model_from_checkpoint(
-    cfg: DictConfig, adapter_path: str | Path
+    cfg: DictConfig, adapter_path: str | Path, is_trainable: bool = False
 ) -> tuple[PreTrainedModel, PreTrainedTokenizer]:
-    """Load base model and attach a previously saved LoRA adapter checkpoint."""
+    """
+    Load base model and attach a previously saved LoRA adapter checkpoint.
+
+    is_trainable=False (default) loads the adapter frozen — correct for
+    inference and for merge_lora_and_save.
+    is_trainable=True keeps the adapter parameters trainable — required by
+    Stage 2 (DPO / GRPO), which continue optimising the SFT adapter.
+    """
     base_model = load_base_model(cfg)
-    model = PeftModel.from_pretrained(base_model, str(adapter_path))
+    model = PeftModel.from_pretrained(
+        base_model, str(adapter_path), is_trainable=is_trainable
+    )
     tokenizer = load_tokenizer(cfg)
-    logger.info(f"LoRA adapter loaded from: {adapter_path}")
+    logger.info(
+        "LoRA adapter loaded from: %s (trainable=%s)", adapter_path, is_trainable
+    )
     return model, tokenizer
 
 
