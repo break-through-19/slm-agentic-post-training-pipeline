@@ -7,24 +7,42 @@ name = "slm-post-training"
 version = "0.1.0"
 description = "Agentic function-calling enhancement in small language models via two-stage post-training"
 requires-python = ">=3.10"
+
+# Version ranges are pinned tight on purpose. Wider ranges (e.g. `torch>=2.3`)
+# trigger pip dependency-resolution backtracking that downloads 5+ versions of
+# torch (~800 MB each, bundling the entire CUDA stack) plus every minor of
+# trl/transformers/tokenizers — easily 15-25 GB of wheels before any install
+# completes. On constrained machines (small /tmp, shared clusters) this
+# manifests as "No space left on device". Keep these ranges narrow.
 dependencies = [
-    "torch>=2.3",
-    "transformers>=4.45",
-    "peft>=0.12",
-    "trl>=0.9",
-    "datasets>=2.20",
-    "accelerate>=0.30",
-    "omegaconf>=2.3",
-    "rich>=13.0",
-    "wandb",
+    "torch>=2.5,<2.6",
+    "transformers>=4.46,<4.50",
+    "tokenizers>=0.20,<0.21",
+    "peft>=0.13,<0.15",
+    "trl>=0.12,<0.13",
+    "datasets>=3.0,<4.0",
+    "accelerate>=1.0,<2.0",
+    "huggingface_hub>=0.26,<0.30",
+    "omegaconf>=2.3,<3.0",
+    "rich>=13.0,<14.0",
 ]
 
 [project.optional-dependencies]
-# Required for Stage 2 preference pair generation (GPU only)
-generation = ["vllm>=0.5"]
-# 4-bit quantisation support (Linux/CUDA only)
-quant = ["bitsandbytes>=0.43"]
-dev = ["pytest>=8.0", "pytest-cov"]
+# Stage 2 preference pair generation (GPU only).
+generation = ["vllm>=0.5,<0.7"]
+
+# 4-bit quantisation support (CUDA Linux only).
+quant = ["bitsandbytes>=0.43,<0.45"]
+
+# Experiment tracking — optional because it pulls 25+ MB of unused deps when
+# wandb.enabled=false in config (the default).
+wandb = ["wandb>=0.18,<0.20"]
+
+# Dev tooling — testing only, never required at runtime.
+dev = [
+    "pytest>=8.0,<10.0",
+    "pytest-cov>=5.0,<8.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
