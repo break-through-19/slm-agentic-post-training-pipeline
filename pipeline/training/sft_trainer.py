@@ -62,6 +62,8 @@ class SFTTrainer(BaseTrainer):
         # activation memory — essential for fitting a 1.5B model on MPS.
         gradient_checkpointing = bool(train_cfg.get("gradient_checkpointing", False))
 
+        has_eval = self.eval_dataset is not None
+
         sft_config = SFTConfig(
             output_dir=str(self.output_dir),
             num_train_epochs=train_cfg.num_epochs,
@@ -81,10 +83,20 @@ class SFTTrainer(BaseTrainer):
             max_grad_norm=train_cfg.max_grad_norm,
             logging_steps=self.cfg.output.log_steps,
             save_steps=train_cfg.save_steps,
-            eval_strategy="steps" if self.eval_dataset is not None else "no",
-            eval_steps=train_cfg.eval_steps if self.eval_dataset is not None else None,
+            eval_strategy="steps" if has_eval else "no",
+            eval_steps=train_cfg.eval_steps if has_eval else None,
             save_strategy="steps",
-            load_best_model_at_end=self.eval_dataset is not None,
+            load_best_model_at_end=has_eval,
+            # IMPORTANT: rank the best checkpoint by token accuracy, NOT eval_loss.
+            # SFT eval batches occasionally contain an example whose only learnable
+            # tokens land on the truncation boundary; after the causal shift that
+            # batch has zero valid targets, so the language-modeling eval_loss comes
+            # back NaN. With the default metric ("loss"), NaN poisons best-model
+            # tracking and transformers silently keeps the FIRST checkpoint —
+            # loading a badly undertrained model at the end. eval_mean_token_accuracy
+            # is always finite and is the meaningful SFT signal anyway.
+            metric_for_best_model="eval_mean_token_accuracy" if has_eval else None,
+            greater_is_better=True if has_eval else None,
             bf16=use_bf16,
             fp16=use_fp16,
             dataloader_pin_memory=use_pin_memory,
