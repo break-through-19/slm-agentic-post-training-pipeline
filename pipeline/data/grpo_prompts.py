@@ -46,6 +46,15 @@ def _load_grpo_prompts(cfg: DictConfig) -> Dataset:
     if max_samples is not None:
         dataset = dataset.shuffle(seed=seed).select(range(min(max_samples, len(dataset))))
 
+    # Phase 1: blend in abstention prompts so GRPO sees irrelevance cases. The
+    # BFCL reward already returns 1.0 for correctly producing no tool call, so
+    # these prompts give the policy a signal to recover the irrelevance category.
+    irrelevance_fraction = cfg.training.get("irrelevance_fraction", 0.0)
+    if irrelevance_fraction > 0:
+        from pipeline.data.irrelevance import inject_irrelevance
+
+        dataset = inject_irrelevance(dataset, irrelevance_fraction, seed=seed)
+
     return dataset
 
 

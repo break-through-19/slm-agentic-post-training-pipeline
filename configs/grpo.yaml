@@ -16,6 +16,7 @@ training:
   dataset: "xlam_grpo"                          # prompt dataset for online rollouts
   sft_checkpoint: "outputs/sft/checkpoint-final"
   max_samples: 2000                             # number of prompts to roll out over
+  irrelevance_fraction: 0.25                    # Phase 1: blend in abstention prompts
   num_epochs: 1
   max_steps: -1                                 # -1 = use num_epochs; >0 = hard cap
   per_device_batch_size: 4                      # must be a multiple of num_generations

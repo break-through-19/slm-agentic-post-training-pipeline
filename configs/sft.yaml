@@ -9,6 +9,10 @@
 training:
   dataset: "xlam_sft"
   max_samples: 15000        # subsample from the full 60K xLAM set
+  # Phase 1: fraction of training rows converted to synthetic abstention
+  # examples (query + mismatched tools → no tool call). xLAM is all-positive,
+  # so without this SFT forgets how to abstain and BFCL irrelevance collapses.
+  irrelevance_fraction: 0.25
   train_split: 0.95
   num_epochs: 3
   max_steps: -1             # -1 = use num_epochs; positive = hard cap on steps

@@ -91,6 +91,14 @@ def _load_xlam(cfg: DictConfig) -> Dataset:
         dataset = dataset.shuffle(seed=seed).select(range(num_to_select))
         logger.info("Subsampled to %d examples (max_samples=%d)", len(dataset), max_samples)
 
+    # Phase 1: optionally convert a fraction of rows into abstention examples so
+    # SFT retains the ability to recognise when no tool applies (irrelevance).
+    irrelevance_fraction = cfg.training.get("irrelevance_fraction", 0.0)
+    if irrelevance_fraction > 0:
+        from pipeline.data.irrelevance import inject_irrelevance
+
+        dataset = inject_irrelevance(dataset, irrelevance_fraction, seed=seed)
+
     return dataset
 
 

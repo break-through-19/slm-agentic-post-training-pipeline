@@ -31,6 +31,9 @@ First, `generate-pairs` samples several completions per query from the SFT model
 ### Stage 2B — Group Relative Policy Optimisation (GRPO)
 Online RL using the verifiable BFCL reward. For each prompt the policy samples a group of completions, scores each with the same grader used at eval time, and shifts toward the above-average completions in the group. Group-relative advantages replace a value function, following the DeepSeek-R1 approach at 1.5B scale.
 
+### Irrelevance augmentation (recovering abstention)
+xLAM contains **only positive** examples, so training on it teaches the model to always emit a tool call and collapses the BFCL `irrelevance` category (base ~0.72 → post-SFT ~0.02). To counter this, every training stage can blend in synthetic **abstention** examples: a real query paired with the tools from a *different* example, so the correct behaviour is to call no function. This is controlled by `irrelevance_fraction` (default `0.25`) in each stage config and requires no BFCL data (no test contamination). See `pipeline/data/irrelevance.py`.
+
 ---
 
 ## Repo Structure
@@ -54,6 +57,7 @@ slm-agentic-post-training-pipeline/
 │   │   ├── registry.py    # DatasetRegistry — name → (load_fn, format_fn)
 │   │   ├── xlam.py        # xLAM-60K loader + SFT formatter (Stage 1)
 │   │   ├── bfcl.py        # BFCL test-set loader + example parser (eval)
+│   │   ├── irrelevance.py # synthesise abstention examples from xLAM (Phase 1)
 │   │   ├── preference.py  # DPO (prompt, chosen, rejected) loader (xlam_dpo)
 │   │   └── grpo_prompts.py# GRPO rollout-prompt loader (xlam_grpo)
 │   │
@@ -392,9 +396,10 @@ Key `sft.yaml` settings (Stage 1):
 | Key | Default | Description |
 |-----|---------|-------------|
 | `training.max_samples` | `15000` | xLAM examples to use for training |
+| `training.irrelevance_fraction` | `0.25` | Fraction converted to abstention examples (Phase 1) |
 | `training.max_steps` | `-1` | Hard cap on training steps (`-1` = use `num_epochs`) |
 | `training.num_epochs` | `3` | Training epochs (ignored when `max_steps > 0`) |
-| `training.per_device_batch_size` | `4` | Per-GPU batch size |
+| `training.per_device_batch_size` | `2` | Per-GPU batch size (24 GB-safe) |
 | `training.learning_rate` | `2e-4` | AdamW learning rate |
 
 Key `dpo.yaml` settings (Stage 2A):
@@ -412,6 +417,7 @@ Key `generate_pairs.yaml` settings (Stage 2A prep):
 | Key | Default | Description |
 |-----|---------|-------------|
 | `generation.num_source_queries` | `2000` | xLAM queries to sample from |
+| `generation.irrelevance_fraction` | `0.25` | Fraction of abstention source queries (Phase 1) |
 | `generation.rollouts_per_query` | `8` | Completions sampled per query |
 | `generation.max_pairs_per_query` | `1` | `(chosen, rejected)` pairs emitted per query |
 | `generation.temperature` | `0.8` | Sampling temperature for rollouts |
@@ -420,9 +426,10 @@ Key `grpo.yaml` settings (Stage 2B):
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `training.num_generations` | `8` | Group size G (completions per prompt) |
+| `training.num_generations` | `4` | Group size G (completions per prompt; 24 GB-safe) |
+| `training.irrelevance_fraction` | `0.25` | Fraction of abstention rollout prompts (Phase 1) |
 | `training.beta` | `0.04` | KL coefficient to the reference policy |
-| `training.per_device_batch_size` | `8` | Must be a multiple of `num_generations` |
+| `training.per_device_batch_size` | `4` | Must be a multiple of `num_generations` |
 | `training.learning_rate` | `1e-6` | Tiny LR for RL fine-tuning |
 | `training.use_vllm` | `false` | Set `true` on GPU with vLLM for fast rollouts |
 

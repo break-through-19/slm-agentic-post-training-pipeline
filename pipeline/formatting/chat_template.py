@@ -26,6 +26,14 @@ logger = logging.getLogger(__name__)
 TOOL_CALL_OPEN_TAG = "<tool_call>"
 TOOL_CALL_CLOSE_TAG = "</tool_call>"
 
+# Assistant target for irrelevance (abstention) SFT examples: a plain-text
+# refusal with NO <tool_call> block. Training on these teaches the model to
+# abstain when none of the available tools fit the request, which is what the
+# BFCL `irrelevance` category rewards.
+NO_TOOL_RESPONSE = (
+    "None of the available tools can fulfil this request, so no function should be called."
+)
+
 _TOOL_CALL_RE = re.compile(
     rf"{re.escape(TOOL_CALL_OPEN_TAG)}\s*(.*?)\s*{re.escape(TOOL_CALL_CLOSE_TAG)}",
     re.DOTALL,
@@ -99,7 +107,12 @@ def format_sft_example(
     learnable tokens after masking.
     """
     normalised_tools = _normalise_tools_for_tokenizer(tools)
-    assistant_response = _render_tool_call_response(expected_calls)
+    # Empty expected_calls = an irrelevance example: the target is a plain-text
+    # refusal (no tool call), teaching the model to abstain.
+    if expected_calls:
+        assistant_response = _render_tool_call_response(expected_calls)
+    else:
+        assistant_response = NO_TOOL_RESPONSE
 
     full_messages = [
         {"role": "user", "content": query},

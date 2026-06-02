@@ -63,6 +63,16 @@ def _load_source_queries(cfg: DictConfig) -> list[dict]:
     )
     dataset = dataset.shuffle(seed=seed).select(range(min(num_queries, len(dataset))))
 
+    # Phase 1: blend in abstention queries. For these the SFT model that
+    # sometimes abstains and sometimes calls a tool yields natural preference
+    # pairs (chosen = abstain, rejected = hallucinated call), teaching DPO to
+    # recover the irrelevance category.
+    irrelevance_fraction = gen_cfg.get("irrelevance_fraction", 0.0)
+    if irrelevance_fraction > 0:
+        from pipeline.data.irrelevance import inject_irrelevance
+
+        dataset = inject_irrelevance(dataset, irrelevance_fraction, seed=seed)
+
     source_examples: list[dict] = []
     for row in dataset:
         source_examples.append(
@@ -197,7 +207,10 @@ def generate_preference_pairs(
     queries_with_signal = 0
 
     for index, example in enumerate(source_examples):
-        if not example["tools"] or not example["expected_calls"]:
+        # Tools are always required to build a prompt. expected_calls MAY be
+        # empty — that is a valid irrelevance example where abstention is the
+        # correct (chosen) behaviour, so we must NOT skip it.
+        if not example["tools"]:
             continue
 
         prompt = format_inference_prompt(

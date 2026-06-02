@@ -10,6 +10,7 @@ generation:
   sft_checkpoint: "outputs/sft/checkpoint-final"
   source_dataset: "xlam"          # source of queries + ground-truth answers
   num_source_queries: 2000        # how many xLAM queries to sample from
+  irrelevance_fraction: 0.25      # Phase 1: blend in abstention source queries
   rollouts_per_query: 8           # completions sampled per query
   max_pairs_per_query: 1          # how many (chosen, rejected) pairs to emit
   temperature: 0.8
