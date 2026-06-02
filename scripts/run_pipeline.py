@@ -7,6 +7,9 @@ Sub-commands (one per pipeline stage):
   baseline        Stage 0  — evaluate the raw Qwen2.5-1.5B-Instruct on BFCL.
                   Produces the floor score every later stage compares against.
 
+  evaluate        Any stage — re-score a saved LoRA checkpoint (or the base
+                  model) on BFCL without re-running training.
+
   sft             Stage 1  — supervised fine-tuning on xLAM-60K with LoRA,
                   followed by BFCL evaluation.
 
@@ -354,6 +357,56 @@ def run_baseline(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Sub-command: evaluate (re-score any checkpoint, no training)
+# ---------------------------------------------------------------------------
+
+def run_evaluate(args: argparse.Namespace) -> None:
+    """
+    Evaluate a saved LoRA checkpoint (or the base model) on BFCL.
+
+    Lets you re-score existing Stage-1/2 checkpoints — e.g. after a grader
+    change — without re-running any training. Results are written next to the
+    checkpoint as evaluate_results.json (or to --output-dir if given).
+    """
+    cfg = OmegaConf.load(args.config)
+
+    if args.device:
+        cfg.model.device = args.device
+    if args.smoke:
+        _apply_smoke_settings_for_eval(cfg)
+
+    _apply_common_overrides(cfg, args)
+
+    device = resolve_device(cfg.model.device)
+
+    if args.checkpoint:
+        from pipeline.model.loader import load_model_from_checkpoint
+
+        model, tokenizer = load_model_from_checkpoint(
+            cfg, args.checkpoint, is_trainable=False
+        )
+        default_output_dir = Path(args.checkpoint)
+        label = args.checkpoint
+    else:
+        # No checkpoint → evaluate the unmodified base model
+        model, tokenizer = load_model(cfg, apply_lora=False)
+        default_output_dir = Path(cfg.output.dir)
+        label = f"base model ({cfg.model.name_or_path})"
+
+    logger.info("Evaluating %s on device: %s", label, device)
+    summary = evaluate_bfcl(model, tokenizer, cfg, device)
+    results = summary.to_dict()
+
+    output_dir = Path(args.output_dir) if args.output_dir else default_output_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "evaluate_results.json"
+    output_path.write_text(json.dumps(results, indent=2))
+    logger.info("Results saved to %s", output_path)
+
+    _print_results_table(results)
+
+
+# ---------------------------------------------------------------------------
 # Sub-command: sft (Stage 1)
 # ---------------------------------------------------------------------------
 
@@ -655,6 +708,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     _add_common_args(baseline_parser)
 
+    # --- evaluate ---
+    evaluate_parser = subparsers.add_parser(
+        "evaluate",
+        help="Evaluate any saved LoRA checkpoint (or the base model) on BFCL — no training.",
+    )
+    _add_common_args(evaluate_parser)
+    evaluate_parser.add_argument(
+        "--checkpoint", default=None, metavar="PATH",
+        help="LoRA adapter checkpoint to evaluate (e.g. outputs/dpo/checkpoint-final). "
+             "Omit to evaluate the base model.",
+    )
+
     # --- sft ---
     sft_parser = subparsers.add_parser(
         "sft",
@@ -754,6 +819,7 @@ if __name__ == "__main__":
     # Dispatch table keeps the entry point flat as stages are added
     COMMAND_DISPATCH = {
         "baseline": run_baseline,
+        "evaluate": run_evaluate,
         "sft": run_sft,
         "generate-pairs": run_generate_pairs,
         "dpo": run_dpo,

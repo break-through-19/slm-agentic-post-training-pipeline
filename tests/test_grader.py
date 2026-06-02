@@ -234,3 +234,88 @@ def test_possible_answer_integer_list():
     expected = [{"name": "set_timer", "arguments": {"minutes": [30, 29]}}]
     result = grade(output, expected)
     assert result.correct is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 0 fix: optional arguments ("" in acceptable list) may be omitted
+# ---------------------------------------------------------------------------
+
+def test_optional_argument_may_be_omitted():
+    # 'unit' is optional (its acceptable list contains ""), so leaving it out
+    # of the prediction must NOT count as a missing argument.
+    output = _make_model_output("calc_area", {"base": 10, "height": 5})
+    expected = [{
+        "name": "calc_area",
+        "arguments": {"base": [10], "height": [5], "unit": ["units", ""]},
+    }]
+    result = grade(output, expected)
+    assert result.correct is True
+
+
+def test_required_argument_still_enforced_when_omitted():
+    # 'height' is required (no "" in its acceptable list) — omitting it fails.
+    output = _make_model_output("calc_area", {"base": 10})
+    expected = [{
+        "name": "calc_area",
+        "arguments": {"base": [10], "height": [5], "unit": ["units", ""]},
+    }]
+    result = grade(output, expected)
+    assert result.correct is False
+    assert result.failure_category == FAILURE_MISSING_ARGUMENT
+
+
+def test_optional_argument_still_graded_when_present():
+    # If the model DOES supply the optional arg, it must be an acceptable value.
+    output = _make_model_output("calc_area", {"base": 10, "height": 5, "unit": "meters"})
+    expected = [{
+        "name": "calc_area",
+        "arguments": {"base": [10], "height": [5], "unit": ["units", ""]},
+    }]
+    result = grade(output, expected)
+    assert result.correct is False
+    assert result.failure_category == FAILURE_WRONG_ARGUMENT_TYPE
+
+
+# ---------------------------------------------------------------------------
+# Phase 0 fix: parallel calls matched order-independently
+# ---------------------------------------------------------------------------
+
+def test_parallel_calls_matched_regardless_of_order():
+    # Predicted order is the reverse of expected — should still be correct.
+    output = _make_parallel_output([
+        ("get_time", {"timezone": "UTC"}),
+        ("get_weather", {"city": "London"}),
+    ])
+    expected = [
+        {"name": "get_weather", "arguments": {"city": "London"}},
+        {"name": "get_time", "arguments": {"timezone": "UTC"}},
+    ]
+    result = grade(output, expected)
+    assert result.correct is True
+
+
+def test_parallel_calls_reordered_with_wrong_arg_still_fails():
+    output = _make_parallel_output([
+        ("get_time", {"timezone": "PST"}),          # wrong value
+        ("get_weather", {"city": "London"}),
+    ])
+    expected = [
+        {"name": "get_weather", "arguments": {"city": "London"}},
+        {"name": "get_time", "arguments": {"timezone": "UTC"}},
+    ]
+    result = grade(output, expected)
+    assert result.correct is False
+
+
+def test_parallel_calls_in_order_still_correct():
+    # Regression: in-order parallel matching must keep working.
+    output = _make_parallel_output([
+        ("get_weather", {"city": "London"}),
+        ("get_time", {"timezone": "UTC"}),
+    ])
+    expected = [
+        {"name": "get_weather", "arguments": {"city": "London"}},
+        {"name": "get_time", "arguments": {"timezone": "UTC"}},
+    ]
+    result = grade(output, expected)
+    assert result.correct is True

@@ -10,10 +10,13 @@ Grading checks, in order:
   0. Irrelevance: if expected_calls is empty, correct iff no tool call produced
   1. At least one <tool_call> block is present (else: no_tool_call)
   2. Number of predicted calls matches expected (else: extra_tool_call)
-  3. For each (predicted, expected) pair:
+  3. Each expected call is matched to a predicted call (order-independent, so
+     parallel calls may appear in any order). A call matches when:
      a. Function name matches exactly (else: wrong_function)
-     b. All expected argument keys are present (else: missing_argument)
-     c. Argument values match after type coercion (else: wrong_argument_type)
+     b. All REQUIRED argument keys are present (else: missing_argument).
+        Optional arguments — those whose acceptable list contains "" — may be
+        omitted without penalty, matching official BFCL scoring.
+     c. Argument values match after type coercion (else: wrong_argument_type).
         When the expected value is a list, any element in that list is accepted
         (BFCL possible-answer format).
 """
@@ -91,6 +94,17 @@ def _load_args(raw: Any) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _is_optional_argument(expected_value) -> bool:
+    """
+    True if this argument may be omitted, per the BFCL possible-answer format.
+
+    BFCL signals an optional argument by including an empty string "" among its
+    acceptable values (e.g. "unit": ["units", ""]). When "" is acceptable, the
+    model is allowed to leave the argument out entirely.
+    """
+    return isinstance(expected_value, list) and "" in expected_value
+
+
 def _grade_arguments(
     predicted_args: dict, expected_args: dict
 ) -> tuple[bool, str | None]:
@@ -101,9 +115,17 @@ def _grade_arguments(
     When an expected argument value is a list (BFCL possible-answer format),
     the predicted value is accepted if it matches any element in that list.
     When it is a scalar, exact equality after type coercion is required.
+
+    Optional arguments (those whose acceptable list contains "") may be omitted
+    from the prediction without penalty — this matches official BFCL scoring,
+    where "" denotes "this argument need not be supplied".
     """
     for expected_key, expected_value in expected_args.items():
         if expected_key not in predicted_args:
+            # Omitting an optional argument is acceptable; only required
+            # arguments count as missing.
+            if _is_optional_argument(expected_value):
+                continue
             return False, FAILURE_MISSING_ARGUMENT
 
         predicted_value = _coerce_value(predicted_args[expected_key])
@@ -192,16 +214,35 @@ def grade(model_output: str, expected_calls: list[dict]) -> GradeResult:
             expected_calls=expected_calls,
         )
 
-    for predicted_call, expected_call in zip(predicted_calls, expected_calls):
-        call_correct, failure = _grade_single_call(predicted_call, expected_call)
-        if not call_correct:
+    # Order-independent matching: BFCL accepts parallel calls in any order, so
+    # greedily pair each expected call with an as-yet-unmatched predicted call
+    # that fully satisfies it. (For the single-call case this reduces to the
+    # obvious one-to-one check.)
+    unmatched_predicted_indices = list(range(len(predicted_calls)))
+    representative_failure: str | None = None
+
+    for expected_call in expected_calls:
+        matched_index = None
+        for predicted_index in unmatched_predicted_indices:
+            call_correct, failure = _grade_single_call(
+                predicted_calls[predicted_index], expected_call
+            )
+            if call_correct:
+                matched_index = predicted_index
+                break
+            # Remember the first concrete failure to report if nothing matches
+            if representative_failure is None:
+                representative_failure = failure
+
+        if matched_index is None:
             return GradeResult(
                 correct=False,
                 reward=0.0,
-                failure_category=failure,
+                failure_category=representative_failure or FAILURE_WRONG_FUNCTION,
                 predicted_calls=predicted_calls,
                 expected_calls=expected_calls,
             )
+        unmatched_predicted_indices.remove(matched_index)
 
     return GradeResult(
         correct=True,

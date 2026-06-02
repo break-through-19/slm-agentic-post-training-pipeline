@@ -210,11 +210,12 @@ huggingface-cli login   # paste token when prompted
 
 ## Running the Pipeline
 
-All stages run through a single script with five sub-commands:
+All stages run through a single script with six sub-commands:
 
 | Sub-command | Stage | What it does |
 |---|---|---|
 | `baseline` | 0 | Evaluate the raw model on BFCL (floor score) |
+| `evaluate` | any | Re-score any saved checkpoint (or the base model) on BFCL — no training |
 | `sft` | 1 | LoRA fine-tune on xLAM-60K, then evaluate |
 | `generate-pairs` | 2A prep | Sample from the SFT model, BFCL-grade, write preference pairs |
 | `dpo` | 2A | Direct Preference Optimisation on the pairs, then evaluate |
@@ -242,6 +243,25 @@ python scripts/run_pipeline.py baseline --smoke --device mps
 ```
 
 Results are written to `outputs/baseline_results.json`.
+
+### Re-scoring a checkpoint — `evaluate`
+
+Evaluate any saved LoRA checkpoint (or the base model) on BFCL without re-running training. Useful after a grader change, or to compare intermediate checkpoints.
+
+```bash
+# Re-score the SFT / DPO / GRPO final adapters
+python scripts/run_pipeline.py evaluate --checkpoint outputs/sft/checkpoint-final  --device cuda
+python scripts/run_pipeline.py evaluate --checkpoint outputs/dpo/checkpoint-final  --device cuda
+python scripts/run_pipeline.py evaluate --checkpoint outputs/grpo/checkpoint-final --device cuda
+
+# Evaluate the base model (no --checkpoint) — same as `baseline`
+python scripts/run_pipeline.py evaluate --device cuda
+
+# Quick check on a subset
+python scripts/run_pipeline.py evaluate --checkpoint outputs/dpo/checkpoint-final --max-eval-samples 100
+```
+
+Results are written to `evaluate_results.json` inside the checkpoint directory (or to `--output-dir` if given).
 
 ### Stage 1 — Supervised Fine-Tuning
 
@@ -417,6 +437,7 @@ CLI flags (sub-command specific):
 | `--max-samples N` | sft | Override training sample count |
 | `--batch-size N` | sft, dpo, grpo | Per-device batch size (lower first on CUDA OOM) |
 | `--skip-eval` / `--run-eval` | sft, dpo, grpo | Skip / force BFCL eval after training |
+| `--checkpoint PATH` | evaluate | LoRA checkpoint to score (omit for the base model) |
 | `--sft-checkpoint PATH` | generate-pairs, dpo, grpo | SFT adapter to start from |
 | `--from-base` | generate-pairs, dpo, grpo | Start from base model when no SFT checkpoint exists |
 | `--pairs-path PATH` | dpo | Preference pairs JSONL to train on |
@@ -463,6 +484,15 @@ Defaults that keep Stage 1 inside 24 GB: `per_device_batch_size=2`, `gradient_ac
 
 Results are reported as per-category accuracy with failure breakdowns:
 `no_tool_call`, `wrong_function`, `missing_argument`, `wrong_argument_type`, `extra_tool_call`.
+
+### Grading rules (`pipeline/reward/bfcl_grader.py`)
+
+A prediction is correct only when every expected call is matched. The grader follows official BFCL semantics on two points that materially affect scores:
+
+- **Optional arguments may be omitted.** BFCL marks an argument optional by including an empty string `""` in its acceptable-value list (e.g. `"unit": ["units", ""]`). Omitting such an argument is **not** a `missing_argument` failure; only required arguments are enforced. If the model *does* supply an optional argument, the value must still be acceptable.
+- **Parallel calls are matched order-independently.** For multi-call (parallel) examples, each expected call is greedily matched to any predicted call that satisfies it, so a correct set of calls in a different order still scores as correct.
+
+Argument values are compared after light type coercion (e.g. the string `"30"` matches the integer `30`, `"true"` matches `True`).
 
 ---
 
