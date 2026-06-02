@@ -6,14 +6,20 @@
 # above-average completions in each group (no value network needed).
 # DeepSeek-R1's algorithm at 1.5B scale.
 
+# Defaults tuned to fit a single 24 GB GPU. GRPO is the most memory-intensive
+# stage: it generates `num_generations` completions per prompt, then runs
+# policy + reference forward/backward over all of them. Group size 4 (down from
+# the classic 8) plus a 1024 prompt cap keeps it inside 24 GB. If you still OOM,
+# drop num_generations and per_device_batch_size to 2, or install vLLM and set
+# use_vllm: true. On a 40/80 GB card raise both back to 8.
 training:
   dataset: "xlam_grpo"                          # prompt dataset for online rollouts
   sft_checkpoint: "outputs/sft/checkpoint-final"
   max_samples: 2000                             # number of prompts to roll out over
   num_epochs: 1
   max_steps: -1                                 # -1 = use num_epochs; >0 = hard cap
-  per_device_batch_size: 8                      # must be a multiple of num_generations
-  gradient_accumulation_steps: 4
+  per_device_batch_size: 4                      # must be a multiple of num_generations
+  gradient_accumulation_steps: 8
   gradient_checkpointing: true
   learning_rate: 1.0e-6                          # RL fine-tuning uses a tiny LR
   warmup_ratio: 0.1
@@ -23,11 +29,14 @@ training:
   save_steps: 100
   # GRPO-specific knobs
   beta: 0.04                                    # KL coefficient to the reference policy
-  num_generations: 8                            # group size G (completions per prompt)
+  num_generations: 4                            # group size G (completions per prompt)
   max_completion_length: 256
   temperature: 0.9
   scale_rewards: true                           # normalise advantages within each group
   use_vllm: false                               # set true on a GPU with vLLM installed
+
+data:
+  max_seq_len: 1024         # caps the rollout prompt length
 
 output:
   dir: "outputs/grpo"

@@ -6,6 +6,11 @@
 # The SFT adapter is loaded as the trainable policy; the reference model is the
 # same network with the adapter disabled (LoRA makes this free).
 
+# Defaults tuned to fit a single 24 GB GPU. DPO is heavier than SFT: it runs
+# ~4 forward passes per step (policy & reference × chosen & rejected), and the
+# reference logits get upcast to fp32. Gradient checkpointing + a short
+# max_seq_len + batch 1 keep the fp32 logit spike inside 24 GB. On a 40/80 GB
+# card you can raise per_device_batch_size and max_seq_len for speed.
 training:
   dataset: "xlam_dpo"                          # registered preference-pair dataset
   pairs_path: "outputs/pairs/dpo_pairs.jsonl"  # written by `generate-pairs`
@@ -13,9 +18,9 @@ training:
   max_samples: null                            # null = use all generated pairs
   num_epochs: 1
   max_steps: -1                                # -1 = use num_epochs; >0 = hard cap
-  per_device_batch_size: 2
-  gradient_accumulation_steps: 4
-  gradient_checkpointing: false
+  per_device_batch_size: 1                     # 24 GB-safe (DPO = ~4 forwards/step)
+  gradient_accumulation_steps: 8               # keeps effective batch at 8
+  gradient_checkpointing: true                 # essential for DPO on 24 GB
   learning_rate: 5.0e-6                         # DPO uses a far smaller LR than SFT
   warmup_ratio: 0.1
   lr_scheduler: "cosine"
@@ -25,6 +30,9 @@ training:
   # DPO-specific knobs
   beta: 0.1                                     # KL regularisation strength
   loss_type: "sigmoid"                          # standard DPO loss (Rafailov+ 2023)
+
+data:
+  max_seq_len: 1024         # caps prompt+completion; halves the fp32 logit spike
 
 output:
   dir: "outputs/dpo"
