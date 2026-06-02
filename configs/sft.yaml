@@ -13,6 +13,9 @@ training:
   num_epochs: 3
   max_steps: -1             # -1 = use num_epochs; positive = hard cap on steps
   per_device_batch_size: 2  # 24 GB-safe; was 4 (OOM with seq_len 2048 + 152K vocab)
+  # Eval is forward-only (no gradients/optimizer state), so it fits a much larger
+  # batch than training — this cuts each eval pass ~4x without affecting accuracy.
+  per_device_eval_batch_size: 8
   gradient_accumulation_steps: 8  # keeps effective batch at 16
   gradient_checkpointing: true    # ~50-70% less activation memory; key for 24 GB
   learning_rate: 2.0e-4
@@ -20,8 +23,10 @@ training:
   lr_scheduler: "cosine"
   weight_decay: 0.01
   max_grad_norm: 1.0
-  save_steps: 200
-  eval_steps: 200
+  # NOTE: when load_best_model_at_end is on, save_steps must stay a multiple of
+  # eval_steps — keep these equal (or save_steps a multiple) if you change them.
+  save_steps: 400
+  eval_steps: 400           # eval half as often as before (was 200) to cut overhead
 
 data:
   max_seq_len: 1024         # most xLAM examples fit; halves activation + logit memory

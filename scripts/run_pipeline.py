@@ -404,6 +404,12 @@ def run_sft(args: argparse.Namespace) -> None:
         cfg.training.max_samples = args.max_samples
     if args.batch_size is not None:
         cfg.training.per_device_batch_size = args.batch_size
+    if args.epochs is not None:
+        cfg.training.num_epochs = args.epochs
+    if args.no_train_eval:
+        # Skip the periodic in-training (LM-loss) evaluation to save wall-clock.
+        # The final BFCL evaluation still runs unless --skip-eval is also passed.
+        cfg.training.disable_in_training_eval = True
 
     device = resolve_device(cfg.model.device)
     logger.info("Stage 1 — SFT on device: %s", device)
@@ -661,6 +667,21 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help="Override max training samples (default: from configs/sft.yaml).",
+    )
+    sft_parser.add_argument(
+        "--epochs",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Override number of training epochs (lower this to expedite; e.g. 1).",
+    )
+    sft_parser.add_argument(
+        "--no-train-eval",
+        action="store_true",
+        help=(
+            "Skip the periodic in-training LM-loss evaluation to save time. "
+            "The final BFCL evaluation still runs unless --skip-eval is set."
+        ),
     )
     sft_parser.add_argument(
         "--skip-eval",
