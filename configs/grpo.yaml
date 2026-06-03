@@ -35,6 +35,10 @@ training:
   temperature: 0.9
   scale_rewards: true                           # normalise advantages within each group
   use_vllm: false                               # set true on a GPU with vLLM installed
+  # Phase 2: shaped partial-credit reward (format + name + per-argument) instead
+  # of binary 0/1. Binary left ~88% of groups with zero reward variance (zero
+  # advantage => no gradient); shaping gives GRPO a real learning signal.
+  reward_shaping: true
 
 data:
   max_seq_len: 1024         # caps the rollout prompt length

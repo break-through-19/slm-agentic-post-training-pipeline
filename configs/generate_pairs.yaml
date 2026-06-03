@@ -9,10 +9,13 @@
 generation:
   sft_checkpoint: "outputs/sft/checkpoint-final"
   source_dataset: "xlam"          # source of queries + ground-truth answers
-  num_source_queries: 2000        # how many xLAM queries to sample from
+  # Phase 3.1 scale-up. Raising max_pairs_per_query extracts more pairs from the
+  # SAME rollouts (no extra generation cost); raising num_source_queries adds
+  # generation time (~50 min per 2000 queries x 8 rollouts on one GPU).
+  num_source_queries: 4000        # how many xLAM queries to sample from
   irrelevance_fraction: 0.25      # Phase 1: blend in abstention source queries
   rollouts_per_query: 8           # completions sampled per query
-  max_pairs_per_query: 1          # how many (chosen, rejected) pairs to emit
+  max_pairs_per_query: 3          # how many (chosen, rejected) pairs to emit
   temperature: 0.8
   top_p: 0.95
   max_new_tokens: 256

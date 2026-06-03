@@ -545,6 +545,8 @@ def run_generate_pairs(args: argparse.Namespace) -> None:
         cfg.generation.num_source_queries = args.num_queries
     if args.rollouts is not None:
         cfg.generation.rollouts_per_query = args.rollouts
+    if args.max_pairs_per_query is not None:
+        cfg.generation.max_pairs_per_query = args.max_pairs_per_query
     if args.output_path:
         cfg.generation.output_path = args.output_path
 
@@ -593,10 +595,18 @@ def run_dpo(args: argparse.Namespace) -> None:
         cfg.training.per_device_batch_size = args.batch_size
     if args.pairs_path:
         cfg.training.pairs_path = args.pairs_path
+    # Phase 3.2: per-run overrides for the beta sweep / data scaling
+    if args.beta is not None:
+        cfg.training.beta = args.beta
+    if args.epochs is not None:
+        cfg.training.num_epochs = args.epochs
 
     sft_checkpoint = args.sft_checkpoint or cfg.training.get("sft_checkpoint")
     device = resolve_device(cfg.model.device)
-    logger.info("Stage 2A — DPO on device: %s", device)
+    logger.info(
+        "Stage 2A — DPO on device: %s | beta=%s epochs=%s",
+        device, cfg.training.beta, cfg.training.num_epochs,
+    )
 
     model, tokenizer = _load_policy_model(cfg, sft_checkpoint, args, trainable=True)
 
@@ -669,7 +679,12 @@ def run_grpo(args: argparse.Namespace) -> None:
     train_dataset = get_dataset("xlam_grpo", cfg, tokenizer=tokenizer)
     logger.info("Loaded %d GRPO rollout prompts", len(train_dataset))
 
-    reward_fn = build_bfcl_reward_function()
+    # Phase 2: shaped (partial-credit) reward by default — gives GRPO within-group
+    # variance so it actually learns. Set training.reward_shaping=false for the
+    # binary-reward ablation.
+    use_shaped_reward = cfg.training.get("reward_shaping", True)
+    logger.info("GRPO reward: %s", "shaped (partial credit)" if use_shaped_reward else "binary")
+    reward_fn = build_bfcl_reward_function(shaped=use_shaped_reward)
 
     trainer = GRPOTrainer(
         cfg=cfg,
@@ -786,6 +801,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                               help="Number of source queries to sample from.")
     pairs_parser.add_argument("--rollouts", type=int, default=None, metavar="N",
                               help="Completions sampled per query.")
+    pairs_parser.add_argument("--max-pairs-per-query", type=int, default=None, metavar="N",
+                              help="Max (chosen, rejected) pairs per query (Phase 3.1; more pairs, "
+                                   "no extra generation cost).")
     pairs_parser.add_argument("--output-path", default=None, metavar="PATH",
                               help="Where to write the pairs JSONL.")
 
@@ -799,6 +817,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     dpo_parser.add_argument(
         "--pairs-path", default=None, metavar="PATH",
         help="Preference pairs JSONL (default: from configs/dpo.yaml).",
+    )
+    dpo_parser.add_argument(
+        "--beta", type=float, default=None, metavar="B",
+        help="DPO KL-regularisation strength (Phase 3.2 sweep; default from configs/dpo.yaml).",
+    )
+    dpo_parser.add_argument(
+        "--epochs", type=int, default=None, metavar="N",
+        help="Override number of DPO epochs (default from configs/dpo.yaml).",
     )
 
     # --- grpo (Stage 2B) ---

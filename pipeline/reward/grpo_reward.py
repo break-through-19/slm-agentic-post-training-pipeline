@@ -8,9 +8,17 @@ TRL's GRPOTrainer calls each reward function with:
 
 and expects a list[float] of per-completion rewards in return.
 
-We delegate scoring to the exact same `bfcl_grader.grade()` used during
-offline evaluation, so the online RL signal and the reported BFCL metric are
-the same function — they cannot drift apart.
+Two reward variants (both from bfcl_grader, so the training signal stays tied
+to the evaluation metric):
+
+  - shaped=True  (default, Phase 2): bfcl_grader.score() — continuous partial
+    credit in [0, 1] for format / function name / individual arguments. This
+    gives within-group reward variance so GRPO actually receives a gradient.
+    A binary reward leaves ~88% of groups with zero variance (zero advantage).
+  - shaped=False (ablation): bfcl_grader.grade().reward — the binary 1/0 metric.
+
+By construction score() == 1.0 exactly when grade() is correct, so the shaped
+reward agrees with the binary metric at the extremes and only fills the middle.
 """
 from __future__ import annotations
 
@@ -18,18 +26,19 @@ import json
 import logging
 from typing import Callable
 
-from pipeline.reward.bfcl_grader import grade
+from pipeline.reward.bfcl_grader import grade, score
 
 logger = logging.getLogger(__name__)
 
 
-def build_bfcl_reward_function() -> Callable:
+def build_bfcl_reward_function(shaped: bool = True) -> Callable:
     """
     Return a TRL-compatible reward function closure.
 
-    The returned callable scores each completion with the BFCL verifier
-    (reward 1.0 for a fully correct tool call, 0.0 otherwise).
+    shaped=True  -> continuous partial-credit reward (recommended for GRPO).
+    shaped=False -> binary reward identical to the BFCL evaluation metric.
     """
+    score_fn = score if shaped else (lambda output, expected: grade(output, expected).reward)
 
     def bfcl_reward(
         completions: list[str],
@@ -48,7 +57,7 @@ def build_bfcl_reward_function() -> Callable:
                 expected_calls = json.loads(ground_truth_json) if ground_truth_json else []
             except (json.JSONDecodeError, TypeError):
                 expected_calls = []
-            rewards.append(grade(completion, expected_calls).reward)
+            rewards.append(score_fn(completion, expected_calls))
         return rewards
 
     # TRL uses the function name as the metric label in its logs

@@ -12,6 +12,7 @@ from pipeline.reward.bfcl_grader import (
     FAILURE_WRONG_ARGUMENT_TYPE,
     FAILURE_WRONG_FUNCTION,
     grade,
+    score,
 )
 from pipeline.formatting.chat_template import TOOL_CALL_OPEN_TAG, TOOL_CALL_CLOSE_TAG
 
@@ -337,3 +338,65 @@ def test_parallel_calls_in_order_still_correct():
     ]
     result = grade(output, expected)
     assert result.correct is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: shaped partial-credit reward score()
+# ---------------------------------------------------------------------------
+
+EXPECTED_TWO_ARGS = [{"name": "get_weather", "arguments": {"city": "Paris", "days": 3}}]
+
+
+def test_score_fully_correct_is_one():
+    output = _make_model_output("get_weather", {"city": "Paris", "days": 3})
+    assert score(output, EXPECTED_TWO_ARGS) == 1.0
+
+
+def test_score_matches_grade_at_extremes():
+    # score() == 1.0 exactly when grade() is correct
+    output = _make_model_output("get_weather", {"city": "Paris", "days": 3})
+    assert grade(output, EXPECTED_TWO_ARGS).correct is True
+    assert score(output, EXPECTED_TWO_ARGS) == 1.0
+
+
+def test_score_no_tool_call_is_zero():
+    assert score("I can't help.", EXPECTED_TWO_ARGS) == 0.0
+
+
+def test_score_wrong_function_gets_format_credit_only():
+    output = _make_model_output("totally_wrong_fn", {"city": "Paris", "days": 3})
+    # 0.2 format credit, no name/argument credit
+    assert score(output, EXPECTED_TWO_ARGS) == pytest.approx(0.2)
+
+
+def test_score_right_function_partial_args_is_between():
+    # correct name + 1 of 2 args correct -> 0.2 + 0.3 + 0.5*(1/2) = 0.75
+    output = _make_model_output("get_weather", {"city": "Paris", "days": 99})
+    assert score(output, EXPECTED_TWO_ARGS) == pytest.approx(0.75)
+
+
+def test_score_right_function_all_args_wrong():
+    # correct name + 0 of 2 args -> 0.2 + 0.3 = 0.5
+    output = _make_model_output("get_weather", {"city": "London", "days": 99})
+    assert score(output, EXPECTED_TWO_ARGS) == pytest.approx(0.5)
+
+
+def test_score_is_monotonic_more_correct_scores_higher():
+    none_right = score(_make_model_output("get_weather", {"city": "X", "days": 9}), EXPECTED_TWO_ARGS)
+    one_right = score(_make_model_output("get_weather", {"city": "Paris", "days": 9}), EXPECTED_TWO_ARGS)
+    all_right = score(_make_model_output("get_weather", {"city": "Paris", "days": 3}), EXPECTED_TWO_ARGS)
+    assert none_right < one_right < all_right
+
+
+def test_score_irrelevance_is_binary():
+    assert score("No suitable tool here.", []) == 1.0
+    assert score(_make_model_output("some_fn", {}), []) == 0.0
+
+
+def test_score_penalises_extra_calls():
+    # One correct call plus a spurious extra call: total 1.0 over denom 2 = 0.5
+    output = _make_parallel_output([
+        ("get_weather", {"city": "Paris", "days": 3}),
+        ("spurious_fn", {}),
+    ])
+    assert score(output, EXPECTED_TWO_ARGS) == pytest.approx(0.5)

@@ -16,7 +16,7 @@ training:
   pairs_path: "outputs/pairs/dpo_pairs.jsonl"  # written by `generate-pairs`
   sft_checkpoint: "outputs/sft/checkpoint-final"
   max_samples: null                            # null = use all generated pairs
-  num_epochs: 1
+  num_epochs: 2                                # Phase 3.1: 2 passes over the larger pair set
   max_steps: -1                                # -1 = use num_epochs; >0 = hard cap
   per_device_batch_size: 1                     # 24 GB-safe (DPO = ~4 forwards/step)
   gradient_accumulation_steps: 8               # keeps effective batch at 8

@@ -29,7 +29,9 @@ Fine-tune with LoRA (rank 16) on the [xLAM-60K](https://huggingface.co/datasets/
 First, `generate-pairs` samples several completions per query from the SFT model, grades each with the BFCL verifier, and pairs a correct completion (chosen) with an incorrect one (rejected). `dpo` then trains the SFT adapter offline on those pairs. The reference model is the adapter-disabled base network, so LoRA makes it free.
 
 ### Stage 2B — Group Relative Policy Optimisation (GRPO)
-Online RL using the verifiable BFCL reward. For each prompt the policy samples a group of completions, scores each with the same grader used at eval time, and shifts toward the above-average completions in the group. Group-relative advantages replace a value function, following the DeepSeek-R1 approach at 1.5B scale.
+Online RL using the verifiable BFCL reward. For each prompt the policy samples a group of completions, scores each, and shifts toward the above-average completions in the group. Group-relative advantages replace a value function, following the DeepSeek-R1 approach at 1.5B scale.
+
+The reward is a **shaped, partial-credit** signal (`bfcl_grader.score`, controlled by `reward_shaping` in `configs/grpo.yaml`): `0.2` for a well-formed call, `+0.3` for the correct function name, `+0.5 ×` the fraction of correct arguments. A plain binary 0/1 reward leaves most sampled groups with identical rewards (zero variance → zero advantage → no gradient); partial credit gives within-group variance so GRPO actually learns. By construction the shaped score equals `1.0` exactly when the binary metric is correct, so training and evaluation never disagree at the extremes. Irrelevance stays binary (abstention is all-or-nothing).
 
 ### Irrelevance augmentation (recovering abstention)
 xLAM contains **only positive** examples, so training on it teaches the model to always emit a tool call and collapses the BFCL `irrelevance` category (base ~0.72 → post-SFT ~0.02). To counter this, every training stage can blend in synthetic **abstention** examples: a real query paired with the tools from a *different* example, so the correct behaviour is to call no function. This is controlled by `irrelevance_fraction` (default `0.25`) in each stage config and requires no BFCL data (no test contamination). See `pipeline/data/irrelevance.py`.
@@ -69,7 +71,8 @@ slm-agentic-post-training-pipeline/
 │   │   └── pair_generator.py # sample from SFT model + grade → preference pairs
 │   │
 │   ├── reward/
-│   │   ├── bfcl_grader.py    # verifiable grader: name + args + types
+│   │   ├── bfcl_grader.py    # verifiable grader: grade() binary metric +
+│   │   │                     # score() shaped partial-credit reward
 │   │   └── grpo_reward.py    # wraps the grader as a TRL GRPO reward function
 │   │
 │   ├── training/
@@ -84,7 +87,8 @@ slm-agentic-post-training-pipeline/
 │       └── metrics.py        # CategoryMetrics, EvalSummary, aggregation
 │
 ├── scripts/
-│   └── run_pipeline.py    # single CLI entry point (5 sub-commands)
+│   ├── run_pipeline.py    # single CLI entry point (6 sub-commands)
+│   └── sweep_dpo_beta.sh  # Phase 3.2 — DPO beta sweep (one run per beta)
 │
 ├── tests/
 │   ├── test_formatting.py    # prompt builder + tool-call extraction
@@ -336,12 +340,42 @@ python scripts/run_pipeline.py dpo \
     --sft-checkpoint outputs/sft/checkpoint-final \
     --pairs-path outputs/pairs/dpo_pairs.jsonl
 
+# Override beta / epochs per run (Phase 3.2)
+python scripts/run_pipeline.py dpo --device cuda --beta 0.05 --epochs 2 --output-dir outputs/dpo_beta0.05
+
 # Smoke test (consumes the pairs from `generate-pairs --smoke`)
 python scripts/run_pipeline.py generate-pairs --smoke --device mps --from-base
 python scripts/run_pipeline.py dpo --smoke --device mps --from-base
 ```
 
 Checkpoints and BFCL results are written to `outputs/dpo/`.
+
+#### Phase 3.1 — scaling the DPO data
+
+More preference pairs give DPO a stronger signal (the first run trained on only ~466). Two levers, set as defaults in `configs/generate_pairs.yaml`:
+
+- `max_pairs_per_query` (default `3`) extracts more pairs from the **same** rollouts — no extra generation cost.
+- `num_source_queries` (default `4000`) samples more queries — adds generation time (~50 min per 2000 queries).
+
+```bash
+# Generate a larger pair set, then DPO over it (2 epochs by default)
+python scripts/run_pipeline.py generate-pairs --device cuda --num-queries 4000 --max-pairs-per-query 3
+python scripts/run_pipeline.py dpo --device cuda
+```
+
+#### Phase 3.2 — beta sweep
+
+`beta` controls how far DPO may move from the reference policy. Sweep it with the helper, which trains one run per value into its own output dir for clean comparison:
+
+```bash
+# Defaults: betas 0.05 0.1 0.3, from outputs/sft/checkpoint-final and outputs/pairs/dpo_pairs.jsonl
+scripts/sweep_dpo_beta.sh
+
+# Custom pairs / checkpoint / beta grid
+scripts/sweep_dpo_beta.sh outputs/pairs/dpo_pairs.jsonl outputs/sft/checkpoint-final 0.05 0.1 0.2 0.5
+```
+
+Then compare `outputs/dpo_beta*/dpo_bfcl_results.json`.
 
 ### Stage 2B — GRPO
 
@@ -408,7 +442,8 @@ Key `dpo.yaml` settings (Stage 2A):
 |-----|---------|-------------|
 | `training.pairs_path` | `outputs/pairs/dpo_pairs.jsonl` | Preference pairs from `generate-pairs` |
 | `training.sft_checkpoint` | `outputs/sft/checkpoint-final` | SFT adapter to refine |
-| `training.beta` | `0.1` | DPO KL-regularisation strength |
+| `training.num_epochs` | `2` | Passes over the pair set (Phase 3.1) |
+| `training.beta` | `0.1` | DPO KL-regularisation strength (sweepable, Phase 3.2) |
 | `training.loss_type` | `sigmoid` | DPO loss variant (sigmoid, ipo, hinge, …) |
 | `training.learning_rate` | `5e-6` | Much smaller than SFT |
 
@@ -416,10 +451,10 @@ Key `generate_pairs.yaml` settings (Stage 2A prep):
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `generation.num_source_queries` | `2000` | xLAM queries to sample from |
+| `generation.num_source_queries` | `4000` | xLAM queries to sample from (Phase 3.1) |
 | `generation.irrelevance_fraction` | `0.25` | Fraction of abstention source queries (Phase 1) |
 | `generation.rollouts_per_query` | `8` | Completions sampled per query |
-| `generation.max_pairs_per_query` | `1` | `(chosen, rejected)` pairs emitted per query |
+| `generation.max_pairs_per_query` | `3` | `(chosen, rejected)` pairs per query (Phase 3.1) |
 | `generation.temperature` | `0.8` | Sampling temperature for rollouts |
 
 Key `grpo.yaml` settings (Stage 2B):
@@ -428,6 +463,7 @@ Key `grpo.yaml` settings (Stage 2B):
 |-----|---------|-------------|
 | `training.num_generations` | `4` | Group size G (completions per prompt; 24 GB-safe) |
 | `training.irrelevance_fraction` | `0.25` | Fraction of abstention rollout prompts (Phase 1) |
+| `training.reward_shaping` | `true` | Shaped partial-credit reward vs binary (Phase 2) |
 | `training.beta` | `0.04` | KL coefficient to the reference policy |
 | `training.per_device_batch_size` | `4` | Must be a multiple of `num_generations` |
 | `training.learning_rate` | `1e-6` | Tiny LR for RL fine-tuning |
@@ -442,13 +478,16 @@ CLI flags (sub-command specific):
 | `--max-eval-samples N` | baseline, sft, dpo, grpo | Cap eval samples per BFCL category |
 | `--categories ...` | baseline, sft, dpo, grpo | Restrict eval to a subset of BFCL categories |
 | `--max-samples N` | sft | Override training sample count |
+| `--epochs N` | sft, dpo | Override number of training epochs |
 | `--batch-size N` | sft, dpo, grpo | Per-device batch size (lower first on CUDA OOM) |
+| `--beta B` | dpo | DPO KL strength (Phase 3.2 sweep) |
 | `--skip-eval` / `--run-eval` | sft, dpo, grpo | Skip / force BFCL eval after training |
 | `--checkpoint PATH` | evaluate | LoRA checkpoint to score (omit for the base model) |
 | `--sft-checkpoint PATH` | generate-pairs, dpo, grpo | SFT adapter to start from |
 | `--from-base` | generate-pairs, dpo, grpo | Start from base model when no SFT checkpoint exists |
 | `--pairs-path PATH` | dpo | Preference pairs JSONL to train on |
 | `--num-queries N` / `--rollouts N` | generate-pairs | Source queries / completions per query |
+| `--max-pairs-per-query N` | generate-pairs | Pairs extracted per query (Phase 3.1) |
 | `--output-path PATH` | generate-pairs | Where to write the pairs JSONL |
 
 Environment variables (set in `.env` or shell):
@@ -510,7 +549,8 @@ Every stage reuses the same building blocks, which is what keeps train-time and 
 | Building block | Used by |
 |---|---|
 | `chat_template.format_inference_prompt` | SFT formatting, evaluation, pair generation, GRPO prompts |
-| `bfcl_grader.grade` | Stage 0/1 evaluation, pair-generation grading, GRPO reward |
+| `bfcl_grader.grade` (binary) | Stage 0/1 evaluation, pair-generation grading |
+| `bfcl_grader.score` (shaped) | GRPO training reward (Phase 2) |
 | `BaseTrainer` | SFT, DPO, and GRPO trainers (each overrides only `_run_training`) |
 | Dataset registry | `xlam_sft`, `xlam_dpo`, `xlam_grpo` — added without touching trainers |
 | `loader.load_model_from_checkpoint(..., is_trainable=True)` | DPO and GRPO load the SFT adapter as the policy |

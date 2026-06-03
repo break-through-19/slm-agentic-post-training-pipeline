@@ -256,3 +256,96 @@ def grade(model_output: str, expected_calls: list[dict]) -> GradeResult:
         predicted_calls=predicted_calls,
         expected_calls=expected_calls,
     )
+
+
+# ---------------------------------------------------------------------------
+# Shaped (partial-credit) reward — Phase 2, for GRPO training only
+# ---------------------------------------------------------------------------
+#
+# grade() above returns a binary 1/0 used for EVALUATION (the BFCL metric). For
+# GRPO *training* a binary reward is too sparse: most sampled groups come back
+# all-correct or all-wrong (zero within-group variance => zero advantage => no
+# gradient). score() returns a continuous reward in [0, 1] that gives partial
+# credit for getting the format / function name / individual arguments right,
+# so groups have variance and the policy receives a learning signal.
+#
+# By construction score() == 1.0 exactly when grade() is correct, so the shaped
+# reward never disagrees with the metric at the extremes — it only fills in the
+# middle.
+
+SCORE_FORMAT_CREDIT = 0.2      # produced a parseable tool-call object
+SCORE_NAME_CREDIT = 0.3        # correct function name
+SCORE_ARGUMENT_CREDIT = 0.5    # split across the expected arguments
+
+
+def _score_single_call(predicted_call, expected_call: dict) -> float:
+    """Continuous [0, 1] partial-credit score for one predicted vs expected call."""
+    if not isinstance(predicted_call, dict):
+        return 0.0
+
+    # Format credit: a well-formed call object was produced
+    call_score = SCORE_FORMAT_CREDIT
+
+    if predicted_call.get("name", "") != expected_call.get("name", ""):
+        return call_score  # wrong function — format credit only
+
+    call_score += SCORE_NAME_CREDIT  # correct function name
+
+    expected_args = _load_args(expected_call.get("arguments", expected_call.get("args", {})))
+    if not expected_args:
+        return call_score + SCORE_ARGUMENT_CREDIT  # nothing to get wrong
+
+    predicted_args = _load_args(predicted_call.get("arguments", predicted_call.get("args", {})))
+    correct_args = 0
+    for expected_key, expected_value in expected_args.items():
+        if expected_key not in predicted_args:
+            if _is_optional_argument(expected_value):
+                correct_args += 1  # optional arg may be omitted
+            continue
+        predicted_value = _coerce_value(predicted_args[expected_key])
+        if isinstance(expected_value, list):
+            if predicted_value in [_coerce_value(v) for v in expected_value]:
+                correct_args += 1
+        else:
+            coerced_expected = _coerce_value(expected_value)
+            if type(predicted_value) is type(coerced_expected) and predicted_value == coerced_expected:
+                correct_args += 1
+
+    call_score += SCORE_ARGUMENT_CREDIT * (correct_args / len(expected_args))
+    return call_score
+
+
+def score(model_output: str, expected_calls: list[dict]) -> float:
+    """
+    Continuous partial-credit reward in [0, 1] for GRPO training.
+
+    - Irrelevance (expected_calls empty): binary — 1.0 for abstaining, else 0.0.
+    - Otherwise: greedily match each expected call to its best predicted call,
+      sum the per-call partial scores, and normalise by max(#expected,
+      #predicted) so that extra or missing calls are penalised.
+    """
+    predicted_calls = extract_tool_calls(model_output)
+
+    # Irrelevance stays binary: abstention is inherently all-or-nothing
+    if not expected_calls:
+        return 1.0 if not predicted_calls else 0.0
+
+    if not predicted_calls:
+        return 0.0
+
+    remaining = list(predicted_calls)
+    total_score = 0.0
+    for expected_call in expected_calls:
+        if not remaining:
+            break
+        best_index, best_value = 0, -1.0
+        for index, candidate in enumerate(remaining):
+            candidate_score = _score_single_call(candidate, expected_call)
+            if candidate_score > best_value:
+                best_index, best_value = index, candidate_score
+        total_score += best_value
+        remaining.pop(best_index)
+
+    # Normalise by the larger count so extra predicted calls dilute the reward
+    denominator = max(len(expected_calls), len(predicted_calls))
+    return total_score / denominator
