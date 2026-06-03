@@ -183,13 +183,27 @@ def format_inference_prompt(
 def extract_tool_calls(model_output: str) -> list[dict]:
     """
     Parse all <tool_call>...</tool_call> blocks from a model's raw output text.
-    Returns a list of dicts with 'name' and 'arguments' keys.
-    Silently drops blocks that contain invalid JSON.
+    Returns a list of dicts, each expected to have 'name' and 'arguments' keys.
+
+    Robustness (important under RL sampling, where the model emits arbitrary
+    text): only JSON *objects* count as tool calls. A block may also contain a
+    JSON *array* of call objects — those are flattened. Blocks whose JSON is a
+    bare string/number/bool, or is malformed, are dropped (they are not valid
+    tool calls), guaranteeing every returned element is a dict.
     """
-    parsed_calls = []
+    parsed_calls: list[dict] = []
     for raw_json in _TOOL_CALL_RE.findall(model_output):
         try:
-            parsed_calls.append(json.loads(raw_json))
+            parsed = json.loads(raw_json)
         except json.JSONDecodeError:
             logger.debug("Skipping malformed tool_call block: %.80s", raw_json)
+            continue
+
+        if isinstance(parsed, dict):
+            parsed_calls.append(parsed)
+        elif isinstance(parsed, list):
+            # Some models emit several calls as a JSON array in one block
+            parsed_calls.extend(item for item in parsed if isinstance(item, dict))
+        else:
+            logger.debug("Skipping non-object tool_call payload: %.80s", raw_json)
     return parsed_calls

@@ -150,6 +150,34 @@ def test_extract_silently_drops_malformed_json():
     assert calls == []
 
 
+def test_extract_drops_non_object_json_payloads():
+    # Valid JSON that is NOT an object must not be returned as a "call"
+    # (this previously crashed the grader with 'str has no attribute get').
+    for payload in ['"just a string"', "42", "true", "null"]:
+        output = f"{TOOL_CALL_OPEN_TAG}{payload}{TOOL_CALL_CLOSE_TAG}"
+        assert extract_tool_calls(output) == [], payload
+
+
+def test_extract_flattens_json_array_of_calls():
+    payload = json.dumps([
+        {"name": "fn_a", "arguments": {}},
+        {"name": "fn_b", "arguments": {"z": 1}},
+    ])
+    output = f"{TOOL_CALL_OPEN_TAG}{payload}{TOOL_CALL_CLOSE_TAG}"
+    calls = extract_tool_calls(output)
+    assert len(calls) == 2
+    assert calls[0]["name"] == "fn_a"
+    assert calls[1]["name"] == "fn_b"
+
+
+def test_extract_array_drops_non_dict_elements():
+    payload = json.dumps([{"name": "fn_a", "arguments": {}}, "garbage", 7])
+    output = f"{TOOL_CALL_OPEN_TAG}{payload}{TOOL_CALL_CLOSE_TAG}"
+    calls = extract_tool_calls(output)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "fn_a"
+
+
 def test_extract_handles_whitespace_around_json():
     payload = json.dumps({"name": "ping", "arguments": {}})
     output = f"{TOOL_CALL_OPEN_TAG}   \n  {payload}  \n  {TOOL_CALL_CLOSE_TAG}"

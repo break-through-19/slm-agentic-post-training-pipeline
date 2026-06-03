@@ -72,6 +72,24 @@ def test_no_tool_call_tag():
     assert result.failure_category == FAILURE_NO_TOOL_CALL
 
 
+def test_non_object_tool_call_does_not_crash():
+    # A <tool_call> whose JSON is a bare string previously crashed the grader
+    # ('str' object has no attribute 'get') mid-GRPO-run. It must now grade
+    # cleanly as "no valid call produced".
+    output = f'{TOOL_CALL_OPEN_TAG}"weather in Paris"{TOOL_CALL_CLOSE_TAG}'
+    expected = [{"name": "get_weather", "arguments": {"city": "Paris"}}]
+    result = grade(output, expected)
+    assert result.correct is False
+    assert result.failure_category == FAILURE_NO_TOOL_CALL  # nothing extractable
+
+
+def test_non_object_tool_call_on_irrelevance_is_abstention():
+    # For irrelevance, an unparseable/non-object call yields no tool call → correct
+    output = f"{TOOL_CALL_OPEN_TAG}42{TOOL_CALL_CLOSE_TAG}"
+    result = grade(output, [])
+    assert result.correct is True
+
+
 def test_empty_output():
     result = grade("", [{"name": "fn", "arguments": {}}])
     assert result.correct is False

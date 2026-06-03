@@ -149,6 +149,11 @@ def _grade_single_call(
     predicted_call: dict, expected_call: dict
 ) -> tuple[bool, str | None]:
     """Grade one predicted call against one expected call."""
+    # Defensive: extract_tool_calls should only return dicts, but never let a
+    # malformed prediction (e.g. a bare JSON string/number) crash a long run.
+    if not isinstance(predicted_call, dict):
+        return False, FAILURE_MALFORMED_JSON
+
     predicted_name = predicted_call.get("name", "")
     expected_name = expected_call.get("name", "")
 
