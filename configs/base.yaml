@@ -34,6 +34,11 @@ evaluation:
     - irrelevance
   max_eval_samples: null    # null = full set; integer caps per-category for dev runs
   max_new_tokens: 256
+  # Sprint step 5: structured-output decoding. Repairs malformed tool calls
+  # (abstention-preserving) and coerces argument types to the schema before
+  # grading. Enable per-run with --constrained, or set true here. Safe for
+  # irrelevance (genuine abstentions are never forced into a call).
+  constrained_decoding: false
 
 wandb:
   enabled: false

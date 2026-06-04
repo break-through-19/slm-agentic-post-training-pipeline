@@ -17,6 +17,10 @@ training:
   sft_checkpoint: "outputs/sft/checkpoint-final"
   max_samples: 2000                             # number of prompts to roll out over
   irrelevance_fraction: 0.25                    # Phase 1: blend in abstention prompts
+  # Sprint step 4: point this at the output of scripts/curate_grpo_prompts.py to
+  # train ONLY on informative prompts (rollouts disagree => non-zero advantage).
+  # This is the real fix for the ~85% zero-variance groups. null = use raw xLAM.
+  curated_prompts_path: null
   num_epochs: 1
   max_steps: -1                                 # -1 = use num_epochs; >0 = hard cap
   per_device_batch_size: 4                      # must be a multiple of num_generations
@@ -30,9 +34,13 @@ training:
   save_steps: 100
   # GRPO-specific knobs
   beta: 0.04                                    # KL coefficient to the reference policy
-  num_generations: 4                            # group size G (completions per prompt)
+  num_generations: 4                            # group size G (completions per prompt).
+                                                # 4 is the 24 GB-safe default; raise to 8
+                                                # (and per_device_batch_size to 8) on a
+                                                # 40/80 GB card for stronger advantage estimates.
   max_completion_length: 256
-  temperature: 0.9
+  temperature: 1.0                              # Sprint step 4: raised 0.9 -> 1.0 for more
+                                                # within-group diversity (cheap extra variance).
   scale_rewards: true                           # normalise advantages within each group
   use_vllm: false                               # set true on a GPU with vLLM installed
   # Phase 2: shaped partial-credit reward (format + name + per-argument) instead

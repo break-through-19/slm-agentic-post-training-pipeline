@@ -397,6 +397,49 @@ Checkpoints and BFCL results are written to `outputs/grpo/`.
 
 **Stage 2 smoke mode** applies the same safeguards as SFT smoke (5-step cap, gradient checkpointing, float32 on MPS, eval skipped unless `--run-eval`). When no SFT checkpoint exists, pass `--from-base` to start Stage 2 from a fresh LoRA on the base model so the pipeline can be exercised without a full SFT run first.
 
+### Accuracy-improvement sprint (post-iteration-4)
+
+Five targeted changes that attack the largest measured failures (xLAM→BFCL argument drift, the DPO irrelevance crash, and the GRPO zero-variance stall). Steps 1, 2 and 5 need no new data; steps 3 and 4 add one preprocessing pass each.
+
+**Step 1 — Balanced / synthesised preference pairs (default on).** `generate-pairs` now rescues the uniform-rollout queries it used to discard: when all rollouts agree it synthesises the missing side of the pair (a hallucinated call or a corrupted-argument call as the rejected; the gold call or the abstention text as the chosen). This lifts the pair yield toward ~100% of queries and **guarantees an abstention pair for every irrelevance query** — the fix for DPO's irrelevance collapse (0.74→0.57). Controlled by `generation.synthesize_pairs` (set `false` for the old behaviour).
+
+```bash
+python scripts/run_pipeline.py generate-pairs --device cuda   # synthesised pairs by default
+```
+
+**Step 2 — Lock DPO β=0.3.** The Phase 3.2 sweep was monotonically best at β=0.3 on every category, so `configs/dpo.yaml` now defaults there (override per-run with `--beta`).
+
+**Step 3 — BFCL-style teacher relabeling.** Distil BFCL-convention answers from a stronger teacher (default Qwen2.5-7B-Instruct), keeping only the examples where the teacher selects the same function(s) as xLAM gold, then train SFT on the relabeled set. This targets the dominant residual error (`wrong_argument_type` from xLAM's argument dialect).
+
+```bash
+python scripts/relabel_xlam.py --device cuda \
+    --teacher Qwen/Qwen2.5-7B-Instruct \
+    --num-samples 20000 --output outputs/relabel/xlam_relabeled.jsonl
+
+python scripts/run_pipeline.py sft --device cuda \
+    --dataset xlam_relabeled --relabeled-path outputs/relabel/xlam_relabeled.jsonl
+```
+
+**Step 4 — GRPO hard-prompt curation.** Screen candidate prompts with the SFT model and keep only the "informative" ones (rollouts disagree → non-zero advantage), which is the real fix for the ~85% zero-variance groups that stalled GRPO. `configs/grpo.yaml` also raises rollout `temperature` to 1.0 for cheaper within-group diversity.
+
+```bash
+python scripts/curate_grpo_prompts.py --device cuda \
+    --sft-checkpoint outputs/sft/checkpoint-final \
+    --num-candidates 8000 --rollouts 8 \
+    --output outputs/grpo/curated_prompts.jsonl
+
+python scripts/run_pipeline.py grpo --device cuda \
+    --curated-prompts outputs/grpo/curated_prompts.jsonl
+```
+
+**Step 5 — Constrained / structured decoding at eval (`--constrained`).** Repairs a malformed tool call (one re-ask, only when the model actually opened a `<tool_call>` block, so genuine abstentions are never forced into a call) and coerces argument types to the schema before grading. Available on every eval-running command.
+
+```bash
+python scripts/run_pipeline.py evaluate --checkpoint outputs/sft/checkpoint-final --constrained
+```
+
+Recommended order for the next run: **steps 1 + 2 first** (fastest, fixes the DPO irrelevance crash), then **step 4** (GRPO), then **step 3** (the heaviest, largest tool-only lift). Step 5 is robustness insurance — small lift on the current well-formed 1.5B checkpoint.
+
 ### Running Tests
 
 No authentication or GPU required — tests use a mock tokenizer.

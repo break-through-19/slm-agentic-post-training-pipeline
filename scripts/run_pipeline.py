@@ -143,6 +143,12 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
         help="Override the output directory from config.",
     )
     parser.add_argument(
+        "--constrained",
+        action="store_true",
+        help="Sprint step 5: structured-output decoding at eval — repair malformed "
+             "calls (abstention-preserving) and coerce argument types to the schema.",
+    )
+    parser.add_argument(
         "--smoke",
         action="store_true",
         help=(
@@ -220,6 +226,8 @@ def _apply_common_overrides(cfg, args) -> None:
         cfg.evaluation.bfcl_categories = args.categories
     if args.output_dir:
         cfg.output.dir = args.output_dir
+    if getattr(args, "constrained", False):
+        cfg.evaluation.constrained_decoding = True
 
 
 def _print_results_table(results: dict) -> None:
@@ -413,12 +421,19 @@ def run_evaluate(args: argparse.Namespace) -> None:
 def run_sft(args: argparse.Namespace) -> None:
     # Import here to avoid pulling in heavy training deps during baseline runs
     import pipeline.data.xlam  # registers "xlam_sft" in the dataset registry
+    import pipeline.data.relabeled  # registers "xlam_relabeled" (sprint step 3)
     from pipeline.data.registry import get_dataset
     from pipeline.training.sft_trainer import SFTTrainer
 
     base_cfg = OmegaConf.load("configs/base.yaml")
     sft_cfg = OmegaConf.load("configs/sft.yaml")
     cfg = OmegaConf.merge(base_cfg, sft_cfg)
+
+    # Sprint step 3: optionally train on teacher-relabeled (BFCL-style) data.
+    if getattr(args, "dataset", None):
+        cfg.training.dataset = args.dataset
+    if getattr(args, "relabeled_path", None):
+        cfg.training.relabeled_path = args.relabeled_path
 
     if args.smoke:
         cfg.training.max_samples = 32
@@ -469,8 +484,9 @@ def run_sft(args: argparse.Namespace) -> None:
 
     model, tokenizer = load_model(cfg, apply_lora=True)
 
-    logger.info("Loading and tokenising xLAM dataset…")
-    full_dataset = get_dataset("xlam_sft", cfg, tokenizer=tokenizer)
+    dataset_name = cfg.training.get("dataset", "xlam_sft")
+    logger.info("Loading and tokenising '%s' dataset…", dataset_name)
+    full_dataset = get_dataset(dataset_name, cfg, tokenizer=tokenizer)
     # Drop examples that were filtered out during tokenisation (empty input_ids)
     full_dataset = full_dataset.filter(
         lambda ex: len(ex["input_ids"]) > 0, desc="Dropping empty examples"
@@ -659,6 +675,10 @@ def run_grpo(args: argparse.Namespace) -> None:
 
     _apply_common_overrides(cfg, args)
 
+    # Sprint step 4: train on the curated informative-prompt set when given.
+    if getattr(args, "curated_prompts", None):
+        cfg.training.curated_prompts_path = args.curated_prompts
+
     if args.batch_size is not None:
         # GRPO requires per_device_batch_size to be a multiple of num_generations
         num_generations = cfg.training.get("num_generations", 8)
@@ -756,6 +776,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Override number of training epochs (lower this to expedite; e.g. 1).",
     )
     sft_parser.add_argument(
+        "--dataset",
+        default=None,
+        metavar="NAME",
+        help="Training dataset to use: 'xlam_sft' (default) or 'xlam_relabeled' "
+             "(BFCL-style teacher-relabeled data from scripts/relabel_xlam.py).",
+    )
+    sft_parser.add_argument(
+        "--relabeled-path",
+        default=None,
+        metavar="PATH",
+        help="JSONL of relabeled examples (used with --dataset xlam_relabeled).",
+    )
+    sft_parser.add_argument(
         "--no-train-eval",
         action="store_true",
         help=(
@@ -834,6 +867,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     _add_common_args(grpo_parser)
     _add_stage2_training_args(grpo_parser)
+    grpo_parser.add_argument(
+        "--curated-prompts", default=None, metavar="PATH",
+        help="JSONL of curated informative prompts from scripts/curate_grpo_prompts.py "
+             "(default: from configs/grpo.yaml).",
+    )
 
     return parser
 
