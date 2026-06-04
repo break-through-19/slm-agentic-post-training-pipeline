@@ -408,6 +408,27 @@ python -m pytest tests/ -v
 python -m pytest tests/ --cov=pipeline --cov-report=term-missing
 ```
 
+### Demos
+
+Two scripts for presenting the project live:
+
+```bash
+# 1. Grader & reward demo: no GPU, no model, runs instantly on a laptop.
+#    Shows verifiable grading, the shaped GRPO reward, and the abstention case.
+python scripts/grader_demo.py
+
+# 2. Live tool-calling comparison: Base vs SFT vs DPO vs GRPO on curated prompts.
+#    Loads the base model once and attaches the LoRA adapters on top of it.
+python scripts/demo.py --device cuda                 # auto-detects adapters in outputs/
+python scripts/demo.py --device cuda \
+    --checkpoint SFT=outputs/sft/checkpoint-final \
+    --checkpoint DPO=outputs/dpo/checkpoint-final
+python scripts/demo.py --device mps --base-only      # base model only, no adapters
+```
+
+`grader_demo.py` is the safety net (no GPU dependency); `demo.py` is the headline,
+ending on the irrelevance prompt where the model should call no tool at all.
+
 ---
 
 ## Configuration
