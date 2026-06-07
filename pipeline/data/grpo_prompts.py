@@ -37,26 +37,6 @@ def _load_grpo_prompts(cfg: DictConfig) -> Dataset:
     max_samples = cfg.training.get("max_samples", None)
     seed = cfg.data.get("seed", 42)
 
-    # Sprint step 4: if a curated prompt file exists, train only on those
-    # "informative" prompts (ones where the SFT model's rollouts disagree, so a
-    # group has non-zero reward variance and therefore a non-zero advantage).
-    # Produced by scripts/curate_grpo_prompts.py with the same {query, tools,
-    # answers} schema as raw xLAM, so the formatter below is reused unchanged.
-    curated_path = cfg.training.get("curated_prompts_path", None)
-    if curated_path:
-        import json
-        from pathlib import Path
-
-        curated_path = Path(curated_path)
-        if curated_path.exists():
-            rows = [json.loads(l) for l in curated_path.read_text().splitlines() if l.strip()]
-            logger.info("Loading %d curated GRPO prompts from %s", len(rows), curated_path)
-            dataset = Dataset.from_list(rows)
-            if max_samples is not None:
-                dataset = dataset.shuffle(seed=seed).select(range(min(max_samples, len(dataset))))
-            return dataset
-        logger.warning("curated_prompts_path %s not found — falling back to xLAM", curated_path)
-
     logger.info("Loading xLAM prompts for GRPO rollouts")
     dataset = load_dataset(
         "Salesforce/xlam-function-calling-60k",

@@ -19,14 +19,6 @@ generation:
   temperature: 0.8
   top_p: 0.95
   max_new_tokens: 256
-  # Sprint step 1: rescue the uniform-rollout queries instead of discarding them.
-  # all-correct  -> synthesise a rejected (hallucinated call for irrelevance, or
-  #                 the gold call with one argument corrupted for positives)
-  # all-incorrect -> synthesise the chosen from the ground truth (abstention
-  #                 text for irrelevance, the gold call for positives)
-  # This lifts the pair yield toward ~100% of queries AND guarantees an
-  # abstention pair per irrelevance query — the fix for the irrelevance crash.
-  synthesize_pairs: true
   output_path: "outputs/pairs/dpo_pairs.jsonl"
 
 output:

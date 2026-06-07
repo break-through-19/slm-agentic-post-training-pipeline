@@ -28,9 +28,7 @@ training:
   max_grad_norm: 1.0
   save_steps: 100
   # DPO-specific knobs
-  beta: 0.3                                     # Phase 3.2 sweep winner: monotonically best
-                                                # on every category (overall 0.675 vs 0.661 at
-                                                # 0.1). Larger beta = larger learned margin here.
+  beta: 0.1                                     # KL regularisation strength
   loss_type: "sigmoid"                          # standard DPO loss (Rafailov+ 2023)
 
 data:

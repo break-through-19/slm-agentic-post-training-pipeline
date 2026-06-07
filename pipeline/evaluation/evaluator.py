@@ -61,12 +61,10 @@ def evaluate_category(
     device: str,
     max_eval_samples: int | None,
     max_new_tokens: int,
-    constrained: bool = False,
 ) -> CategoryMetrics:
     """Evaluate the model on one BFCL category and return per-category metrics."""
     dataset = load_bfcl_category(category, max_samples=max_eval_samples)
-    logger.info("Evaluating %d examples in category '%s'%s", len(dataset), category,
-                " (constrained decoding)" if constrained else "")
+    logger.info("Evaluating %d examples in category '%s'", len(dataset), category)
 
     grade_results: list[GradeResult] = []
 
@@ -87,18 +85,6 @@ def evaluate_category(
         model_output = _generate_one_response(
             model, tokenizer, prompt, device, max_new_tokens
         )
-        # Sprint step 5: repair a malformed call (abstention-preserving) and
-        # normalise argument types to the schema before grading.
-        if constrained:
-            from pipeline.evaluation.constrained import (
-                normalise_prediction,
-                repair_prediction,
-            )
-
-            model_output = repair_prediction(
-                model, tokenizer, example["query"], example["tools"],
-                model_output, device, max_new_tokens)
-            model_output = normalise_prediction(model_output, example["tools"])
         result = grade(model_output, example["expected_calls"])
         grade_results.append(result)
 
@@ -135,7 +121,6 @@ def evaluate_bfcl(
     categories: list[str] = list(cfg.evaluation.bfcl_categories)
     max_eval_samples: int | None = cfg.evaluation.get("max_eval_samples", None)
     max_new_tokens: int = cfg.evaluation.get("max_new_tokens", 256)
-    constrained: bool = cfg.evaluation.get("constrained_decoding", False)
 
     model.eval()
     summary = EvalSummary()
@@ -149,7 +134,6 @@ def evaluate_bfcl(
                 device=device,
                 max_eval_samples=max_eval_samples,
                 max_new_tokens=max_new_tokens,
-                constrained=constrained,
             )
             summary.per_category[category] = metrics
         except Exception as exc:
