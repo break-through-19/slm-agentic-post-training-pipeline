@@ -1,6 +1,6 @@
 # SLM Agentic Post-Training Pipeline
 
-Frontier-lab post-training techniques at small scale — teaching a 1.5B model to call functions like a much larger one.
+Frontier-lab post-training techniques at small scale, teaching a 1.5B model to call functions like a much larger one.
 
 **Model:** `Qwen/Qwen2.5-1.5B-Instruct`  
 **Benchmark:** [Berkeley Function Calling Leaderboard (BFCL v3)](https://gorilla.cs.berkeley.edu/leaderboard.html)
@@ -19,16 +19,16 @@ Baseline       SFT            DPO            GRPO
 
 All four model variants are evaluated on BFCL to measure incremental improvement.
 
-### Stage 0 — Baseline
+### Stage 0: Baseline
 Evaluate the raw `Qwen2.5-1.5B-Instruct` on all BFCL sub-categories to establish the floor score.
 
-### Stage 1 — Supervised Fine-Tuning (SFT)
-Fine-tune with LoRA (rank 16) on the [xLAM-60K](https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k) dataset — 10–20K high-quality function-calling demonstrations. Teaches the model the correct output format and basic tool-selection logic.
+### Stage 1: Supervised Fine-Tuning (SFT)
+Fine-tune with LoRA (rank 16) on the [xLAM-60K](https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k) dataset: 10–20K high-quality function-calling demonstrations. Teaches the model the correct output format and basic tool-selection logic.
 
-### Stage 2A — Direct Preference Optimisation (DPO)
+### Stage 2A: Direct Preference Optimisation (DPO)
 First, `generate-pairs` samples several completions per query from the SFT model, grades each with the BFCL verifier, and pairs a correct completion (chosen) with an incorrect one (rejected). `dpo` then trains the SFT adapter offline on those pairs. The reference model is the adapter-disabled base network, so LoRA makes it free.
 
-### Stage 2B — Group Relative Policy Optimisation (GRPO)
+### Stage 2B: Group Relative Policy Optimisation (GRPO)
 Online RL using the verifiable BFCL reward. For each prompt the policy samples a group of completions, scores each, and shifts toward the above-average completions in the group. Group-relative advantages replace a value function, following the DeepSeek-R1 approach at 1.5B scale.
 
 The reward is a **shaped, partial-credit** signal (`bfcl_grader.score`, controlled by `reward_shaping` in `configs/grpo.yaml`): `0.2` for a well-formed call, `+0.3` for the correct function name, `+0.5 ×` the fraction of correct arguments. A plain binary 0/1 reward leaves most sampled groups with identical rewards (zero variance → zero advantage → no gradient); partial credit gives within-group variance so GRPO actually learns. By construction the shaped score equals `1.0` exactly when the binary metric is correct, so training and evaluation never disagree at the extremes. Irrelevance stays binary (abstention is all-or-nothing).
@@ -42,7 +42,7 @@ xLAM contains **only positive** examples, so training on it teaches the model to
 
 ```
 slm-agentic-post-training-pipeline/
-├── .env.example           # token config template — copy to .env and fill in
+├── .env.example           # token config template: copy to .env and fill in
 ├── configs/
 │   ├── base.yaml          # shared defaults (model, LoRA, evaluation)
 │   ├── sft.yaml           # Stage 1 training hyperparameters
@@ -56,7 +56,7 @@ slm-agentic-post-training-pipeline/
 │   │   └── lora_config.py # build LoraConfig from YAML
 │   │
 │   ├── data/
-│   │   ├── registry.py    # DatasetRegistry — name → (load_fn, format_fn)
+│   │   ├── registry.py    # DatasetRegistry: name → (load_fn, format_fn)
 │   │   ├── xlam.py        # xLAM-60K loader + SFT formatter (Stage 1)
 │   │   ├── bfcl.py        # BFCL test-set loader + example parser (eval)
 │   │   ├── irrelevance.py # synthesise abstention examples from xLAM (Phase 1)
@@ -77,7 +77,7 @@ slm-agentic-post-training-pipeline/
 │   │
 │   ├── training/
 │   │   ├── base_trainer.py   # abstract: config persistence, checkpointing,
-│   │   │                     # eval hooks — shared by all stages
+│   │   │                     # eval hooks, shared by all stages
 │   │   ├── sft_trainer.py    # Stage 1: wraps TRL SFTTrainer
 │   │   ├── dpo_trainer.py    # Stage 2A: wraps TRL DPOTrainer
 │   │   └── grpo_trainer.py   # Stage 2B: wraps TRL GRPOTrainer
@@ -88,7 +88,7 @@ slm-agentic-post-training-pipeline/
 │
 ├── scripts/
 │   ├── run_pipeline.py    # single CLI entry point (6 sub-commands)
-│   └── sweep_dpo_beta.sh  # Phase 3.2 — DPO beta sweep (one run per beta)
+│   └── sweep_dpo_beta.sh  # Phase 3.2: DPO beta sweep (one run per beta)
 │
 ├── tests/
 │   ├── test_formatting.py    # prompt builder + tool-call extraction
@@ -103,10 +103,10 @@ slm-agentic-post-training-pipeline/
 ```
 
 ### Design Principles
-- **Shared reward signal** — `bfcl_grader.grade()` is used identically during evaluation (Stage 0/1) and RL training (Stage 2B). Train-time and eval-time rewards cannot diverge.
-- **Dataset registry** — adding a new dataset for Stage 2 (preference pairs) requires only a new file; no training code changes.
-- **Single formatter** — all prompt construction goes through `pipeline/formatting/chat_template.py`, so SFT demonstrations and inference prompts are byte-for-byte identical.
-- **Pluggable trainers** — `DPOTrainer` and `GRPOTrainer` will override only `_run_training()`; checkpointing, config persistence, and eval hooks are inherited from `BaseTrainer`.
+- **Shared reward signal**: `bfcl_grader.grade()` is used identically during evaluation (Stage 0/1) and RL training (Stage 2B). Train-time and eval-time rewards cannot diverge.
+- **Dataset registry**: adding a new dataset for Stage 2 (preference pairs) requires only a new file; no training code changes.
+- **Single formatter**: all prompt construction goes through `pipeline/formatting/chat_template.py`, so SFT demonstrations and inference prompts are byte-for-byte identical.
+- **Pluggable trainers**: `DPOTrainer` and `GRPOTrainer` will override only `_run_training()`; checkpointing, config persistence, and eval hooks are inherited from `BaseTrainer`.
 
 ---
 
@@ -114,7 +114,7 @@ slm-agentic-post-training-pipeline/
 
 **Requirements:**
 
-- **Python ≥ 3.10 (hard requirement).** The training stack (`trl≥1.0`, `transformers≥4.49`, `tokenizers≥0.22`) ships wheels only for cp310+. On Python 3.9 pip silently backtracks to ancient, incompatible versions (trl 0.12, transformers 4.46) — this is slow *and* installs a TRL whose API the trainers don't target. Check with `python --version`.
+- **Python ≥ 3.10 (hard requirement).** The training stack (`trl≥1.0`, `transformers≥4.49`, `tokenizers≥0.22`) ships wheels only for cp310+. On Python 3.9 pip silently backtracks to ancient, incompatible versions (trl 0.12, transformers 4.46); this is slow *and* installs a TRL whose API the trainers don't target. Check with `python --version`.
 - **PyTorch ≥ 2.5, installed first** (see below). `torch` is deliberately not a declared dependency, so you control which CUDA build is used.
 
 ```bash
@@ -159,7 +159,7 @@ export PIP_CACHE_DIR=$HOME/.cache/pip
 # torch first, from PyTorch's CUDA index (the +cuXXX build, not PyPI's)
 pip install --index-url https://download.pytorch.org/whl/cu121 torch==2.5.1
 
-# then the package — pip leaves the installed torch untouched and never
+# then the package; pip leaves the installed torch untouched and never
 # re-resolves the multi-GB nvidia-* CUDA wheels
 pip install -e ".[dev,quant]"
 
@@ -175,18 +175,18 @@ right stack landed: `python -c "import trl, transformers; print(trl.__version__,
 
 The xLAM-60K training dataset is gated on HuggingFace and requires a token. The BFCL evaluation dataset is public and needs no token.
 
-### Step 1 — Create a HuggingFace Read token
+### Step 1: Create a HuggingFace Read token
 
 1. Go to **https://huggingface.co/settings/tokens**
 2. Click **New token**
 3. Set type to **Read** (write access is not needed)
 4. Copy the token (starts with `hf_...`)
 
-### Step 2 — Accept the xLAM dataset terms
+### Step 2: Accept the xLAM dataset terms
 
 Visit **https://huggingface.co/datasets/Salesforce/xlam-function-calling-60k** and click **"Agree and access repository"**. This is a one-time action per HuggingFace account.
 
-### Step 3 — Configure your token
+### Step 3: Configure your token
 
 Copy the provided template and add your token:
 
@@ -200,7 +200,7 @@ Edit `.env`:
 HF_TOKEN=hf_your_token_here
 ```
 
-The `.env` file is git-ignored and will never be committed. The pipeline loads it automatically on startup — no `export` command needed.
+The `.env` file is git-ignored and will never be committed. The pipeline loads it automatically on startup; no `export` command needed.
 
 **Alternative:** set the token directly in your shell (takes priority over `.env`):
 
@@ -223,15 +223,15 @@ All stages run through a single script with six sub-commands:
 | Sub-command | Stage | What it does |
 |---|---|---|
 | `baseline` | 0 | Evaluate the raw model on BFCL (floor score) |
-| `evaluate` | any | Re-score any saved checkpoint (or the base model) on BFCL — no training |
+| `evaluate` | any | Re-score any saved checkpoint (or the base model) on BFCL (no training) |
 | `sft` | 1 | LoRA fine-tune on xLAM-60K, then evaluate |
 | `generate-pairs` | 2A prep | Sample from the SFT model, BFCL-grade, write preference pairs |
 | `dpo` | 2A | Direct Preference Optimisation on the pairs, then evaluate |
 | `grpo` | 2B | Online GRPO with the verifiable BFCL reward, then evaluate |
 
-### Stage 0 — Baseline Evaluation
+### Stage 0: Baseline Evaluation
 
-No authentication required — BFCL is a public dataset.
+No authentication required; BFCL is a public dataset.
 
 ```bash
 # Auto-detect best device (CUDA → MPS → CPU)
@@ -246,13 +246,13 @@ python scripts/run_pipeline.py baseline --categories simple irrelevance
 # Cap samples per category (faster dev run)
 python scripts/run_pipeline.py baseline --max-eval-samples 100
 
-# Smoke test — 5 samples/category, ~2 min on Apple Silicon
+# Smoke test: 5 samples/category, ~2 min on Apple Silicon
 python scripts/run_pipeline.py baseline --smoke --device mps
 ```
 
 Results are written to `outputs/baseline_results.json`.
 
-### Re-scoring a checkpoint — `evaluate`
+### Re-scoring a checkpoint: `evaluate`
 
 Evaluate any saved LoRA checkpoint (or the base model) on BFCL without re-running training. Useful after a grader change, or to compare intermediate checkpoints.
 
@@ -262,7 +262,7 @@ python scripts/run_pipeline.py evaluate --checkpoint outputs/sft/checkpoint-fina
 python scripts/run_pipeline.py evaluate --checkpoint outputs/dpo/checkpoint-final  --device cuda
 python scripts/run_pipeline.py evaluate --checkpoint outputs/grpo/checkpoint-final --device cuda
 
-# Evaluate the base model (no --checkpoint) — same as `baseline`
+# Evaluate the base model (no --checkpoint), same as `baseline`
 python scripts/run_pipeline.py evaluate --device cuda
 
 # Quick check on a subset
@@ -271,7 +271,7 @@ python scripts/run_pipeline.py evaluate --checkpoint outputs/dpo/checkpoint-fina
 
 Results are written to `evaluate_results.json` inside the checkpoint directory (or to `--output-dir` if given).
 
-### Stage 1 — Supervised Fine-Tuning
+### Stage 1: Supervised Fine-Tuning
 
 Requires HuggingFace authentication (see [Authentication](#authentication) above).
 
@@ -291,7 +291,7 @@ python scripts/run_pipeline.py sft --batch-size 1
 # Skip BFCL eval after training
 python scripts/run_pipeline.py sft --skip-eval
 
-# Smoke test — 32 samples, 5 training steps, ~10 min on Apple Silicon
+# Smoke test: 32 samples, 5 training steps, ~10 min on Apple Silicon
 python scripts/run_pipeline.py sft --smoke --device mps
 
 # Smoke test WITH post-training BFCL eval (adds ~20 min)
@@ -302,12 +302,12 @@ Checkpoints and BFCL results are written to `outputs/sft/`.
 
 **Smoke mode notes (`--smoke`):**
 
-- Caps training at 5 steps regardless of `num_epochs` — designed to validate the pipeline end-to-end, not to produce a useful model.
+- Caps training at 5 steps regardless of `num_epochs`; designed to validate the pipeline end-to-end, not to produce a useful model.
 - Defaults to skipping BFCL evaluation after training, since 5 steps cannot meaningfully change the baseline scores. Use `--run-eval` to opt back in.
 - Forces `float32` precision on MPS to avoid known bf16 NaN-gradient issues on Apple Silicon. The default `bfloat16` is still used on CUDA.
 - Sets `max_seq_len=512` so each training step finishes quickly.
 
-### Stage 2A — Generate Preference Pairs
+### Stage 2A: Generate Preference Pairs
 
 Samples completions from the SFT model and writes BFCL-graded `(chosen, rejected)` pairs to JSONL. Requires HuggingFace authentication (xLAM is the query source).
 
@@ -327,7 +327,7 @@ python scripts/run_pipeline.py generate-pairs --smoke --device mps --from-base
 
 Pairs are written to `outputs/pairs/dpo_pairs.jsonl` (or `outputs/pairs_smoke/` in smoke mode).
 
-### Stage 2A — DPO
+### Stage 2A: DPO
 
 Trains the SFT adapter on the generated pairs. The reference model is the adapter-disabled base network (free with LoRA).
 
@@ -350,12 +350,12 @@ python scripts/run_pipeline.py dpo --smoke --device mps --from-base
 
 Checkpoints and BFCL results are written to `outputs/dpo/`.
 
-#### Phase 3.1 — scaling the DPO data
+#### Phase 3.1: Scaling the DPO data
 
 More preference pairs give DPO a stronger signal (the first run trained on only ~466). Two levers, set as defaults in `configs/generate_pairs.yaml`:
 
-- `max_pairs_per_query` (default `3`) extracts more pairs from the **same** rollouts — no extra generation cost.
-- `num_source_queries` (default `4000`) samples more queries — adds generation time (~50 min per 2000 queries).
+- `max_pairs_per_query` (default `3`) extracts more pairs from the **same** rollouts, with no extra generation cost.
+- `num_source_queries` (default `4000`) samples more queries, adding generation time (~50 min per 2000 queries).
 
 ```bash
 # Generate a larger pair set, then DPO over it (2 epochs by default)
@@ -363,7 +363,7 @@ python scripts/run_pipeline.py generate-pairs --device cuda --num-queries 4000 -
 python scripts/run_pipeline.py dpo --device cuda
 ```
 
-#### Phase 3.2 — beta sweep
+#### Phase 3.2: Beta Sweep
 
 `beta` controls how far DPO may move from the reference policy. Sweep it with the helper, which trains one run per value into its own output dir for clean comparison:
 
@@ -377,7 +377,7 @@ scripts/sweep_dpo_beta.sh outputs/pairs/dpo_pairs.jsonl outputs/sft/checkpoint-f
 
 Then compare `outputs/dpo_beta*/dpo_bfcl_results.json`.
 
-### Stage 2B — GRPO
+### Stage 2B: GRPO
 
 Online RL: samples a group of completions per prompt and scores them with the verifiable BFCL reward. GRPO is compute-heavy (multiple generations per prompt per step) and is realistically a **GPU** workload; the MPS/CPU paths exist for smoke-testing only.
 
@@ -399,7 +399,7 @@ Checkpoints and BFCL results are written to `outputs/grpo/`.
 
 ### Running Tests
 
-No authentication or GPU required — tests use a mock tokenizer.
+No authentication or GPU required; tests use a mock tokenizer.
 
 ```bash
 python -m pytest tests/ -v
@@ -524,7 +524,7 @@ Environment variables (set in `.env` or shell):
 
 The defaults target a single **24 GB** GPU. If you see `torch.OutOfMemoryError: CUDA out of memory`, apply these in order (each trades speed or effective batch size for memory):
 
-1. **Lower the per-device batch size** — the fastest lever:
+1. **Lower the per-device batch size** (the fastest lever):
    ```bash
    python scripts/run_pipeline.py sft --batch-size 1
    ```
@@ -573,7 +573,7 @@ Every stage reuses the same building blocks, which is what keeps train-time and 
 | `bfcl_grader.grade` (binary) | Stage 0/1 evaluation, pair-generation grading |
 | `bfcl_grader.score` (shaped) | GRPO training reward (Phase 2) |
 | `BaseTrainer` | SFT, DPO, and GRPO trainers (each overrides only `_run_training`) |
-| Dataset registry | `xlam_sft`, `xlam_dpo`, `xlam_grpo` — added without touching trainers |
+| Dataset registry | `xlam_sft`, `xlam_dpo`, `xlam_grpo`: added without touching trainers |
 | `loader.load_model_from_checkpoint(..., is_trainable=True)` | DPO and GRPO load the SFT adapter as the policy |
 
 **Adding another preference algorithm** (e.g. KTO, IPO, ORPO, SimPO) is a localised change:
